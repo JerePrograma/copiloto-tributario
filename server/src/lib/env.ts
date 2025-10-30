@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { z } from "zod";
 
 const envSchema = z.object({
@@ -12,7 +13,5 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().optional(),
   FRONTEND_ORIGIN: z.string().url().optional(),
 });
-
 export type Env = z.infer<typeof envSchema>;
-
 export const env: Env = envSchema.parse(process.env);
