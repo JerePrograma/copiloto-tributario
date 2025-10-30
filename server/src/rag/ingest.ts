@@ -1,12 +1,27 @@
 #!/usr/bin/env node
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { prisma } from "../lib/prisma";
 import { env } from "../lib/env";
 import { chunkText } from "./chunk";
 import { embed } from "../lib/ollama";
 
+// -------- CLI root: --root > env.DOCS_ROOT > default ../../data
+function getArg(flag: string): string | undefined {
+  const i = process.argv.indexOf(flag);
+  return i >= 0 ? process.argv[i + 1] : undefined;
+}
+const rootArg = getArg("--root");
+const effectiveRoot = rootArg
+  ? resolve(process.cwd(), rootArg)
+  : env.DOCS_ROOT
+  ? resolve(process.cwd(), env.DOCS_ROOT)
+  : resolve(__dirname, "../../data");
+
+console.log("INGEST_ROOT =", effectiveRoot, " argv=", process.argv.slice(2));
+
+// -------- Walk
 export function* walk(dir: string): Generator<string> {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
@@ -19,17 +34,22 @@ export function* walk(dir: string): Generator<string> {
   }
 }
 
+// -------- Ingest one file
 export async function ingestFile(filePath: string) {
-  const relativePath = relative(env.DOCS_ROOT, filePath).replace(/\\/g, "/");
+  const relativePath = relative(effectiveRoot, filePath).replace(/\\/g, "/");
   const title = relativePath.split("/").pop() || relativePath;
   const raw = readFileSync(filePath, "utf8");
+
+  // upsert por (path, version) usando unique compuesto path_version
   const doc = await prisma.doc.upsert({
     where: { path_version: { path: relativePath, version: 1 } },
     update: { title },
     create: { path: relativePath, title, version: 1 },
   });
 
+  // reindex completo del doc
   await prisma.docChunk.deleteMany({ where: { docId: doc.id } });
+
   const chunks = chunkText(raw, 700, 120);
   console.log(`Indexando ${relativePath}: ${chunks.length} chunks`);
 
@@ -45,13 +65,11 @@ export async function ingestFile(filePath: string) {
         href: `${relativePath}#chunk=${chunk.idx}`,
       },
     });
+
     const { vector, tMs } = await embed(chunk.content);
+    // Persistencia vía SQL crudo (pgvector)
     const vectorLiteral =
-      "[" +
-      vector
-        .map((value) => Number(value).toFixed(6))
-        .join(",") +
-      "]";
+      "[" + vector.map((v) => Number(v).toFixed(6)).join(",") + "]";
     await prisma.$executeRawUnsafe(
       `UPDATE "DocChunk" SET "embedding" = '${vectorLiteral}'::vector WHERE "id" = '${created.id}'`
     );
@@ -59,13 +77,16 @@ export async function ingestFile(filePath: string) {
   }
 }
 
+// -------- Main
 async function main() {
   const start = performance.now();
-  for (const file of walk(env.DOCS_ROOT)) {
+  let count = 0;
+  for (const file of walk(effectiveRoot)) {
     await ingestFile(file);
+    count++;
   }
   const totalMs = Math.round(performance.now() - start);
-  console.log(`Ingesta completada en ${totalMs} ms`);
+  console.log(`Ingesta completada: ${count} archivos en ${totalMs} ms`);
 }
 
 main().catch((error) => {
