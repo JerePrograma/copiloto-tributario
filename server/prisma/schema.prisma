@@ -1,0 +1,102 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum FollowUpStatus {
+  PENDING
+  DONE
+  CANCELED
+}
+
+model InvitedUser {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  passcode  String
+  createdAt DateTime  @default(now())
+  sessions  Session[]
+  Lead      Lead[]
+  Note      Note[]
+}
+
+model Session {
+  id        String      @id @default(cuid())
+  userId    String
+  token     String      @unique
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  expiresAt DateTime
+  user      InvitedUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Lead {
+  id        String   @id @default(cuid())
+  userId    String?
+  name      String
+  company   String?
+  email     String?
+  phone     String?
+  status    String   @default("new")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      InvitedUser? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  notes     Note[]
+  followups FollowUp[]
+}
+
+model Note {
+  id        String   @id @default(cuid())
+  leadId    String?
+  userId    String?
+  content   String
+  createdAt DateTime @default(now())
+
+  lead Lead?        @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  user InvitedUser? @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
+
+model FollowUp {
+  id          String         @id @default(cuid())
+  leadId      String
+  dueAt       DateTime
+  status      FollowUpStatus @default(PENDING)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  completedAt DateTime?
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId, dueAt])
+}
+
+model Doc {
+  id        String     @id @default(cuid())
+  path      String
+  title     String
+  version   Int        @default(1)
+  createdAt DateTime   @default(now())
+  chunks    DocChunk[]
+
+  @@unique([path, version])
+}
+
+model DocChunk {
+  id         String                 @id @default(cuid())
+  docId      String
+  idx        Int
+  content    String
+  tokenCount Int
+  startChar  Int
+  endChar    Int
+  href       String?
+  embedding  Unsupported("vector")?
+
+  doc Doc @relation(fields: [docId], references: [id], onDelete: Cascade)
+
+  @@index([docId, idx])
+}
