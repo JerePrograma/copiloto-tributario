@@ -1,5 +1,5 @@
-import { PrismaClient } from "@prisma/client";
-const prisma = new PrismaClient();
+import { prisma } from "../src/lib/prisma";
+
 async function main() {
   const email = "demo@laburen.local";
   const passcode = "123456";
@@ -10,11 +10,7 @@ async function main() {
   });
   console.log("Seed OK:", { email, passcode });
 }
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "tsx src/api/dev-server.ts",
     "prisma:generate": "prisma generate",
-    "migrate": "prisma migrate dev"
+    "migrate": "prisma migrate dev",
+    "ingest": "tsx src/rag/ingest.ts",
+    "ingest:path": "tsx scripts/ingest_path.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.58",
