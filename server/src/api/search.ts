@@ -5,34 +5,129 @@ import { prisma } from "../lib/prisma";
 import { searchDocuments } from "../rag/search";
 import { recordSearchAudit } from "../metrics/audit";
 
+// Normalización y sinónimos iguales a /api/chat
+function stripAccents(s: string): string {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+function norm(s: string): string {
+  return stripAccents(s).toLowerCase();
+}
+const LEX = {
+  exencion: [
+    "exención",
+    "exencion",
+    "exento",
+    "exentos",
+    "exímase",
+    "eximase",
+    "exceptúase",
+    "exceptuase",
+    "no alcanzad",
+  ],
+  automotor: [
+    "automotor",
+    "automotores",
+    "rodado",
+    "rodados",
+    "vehiculo",
+    "vehículos",
+    "vehiculo/s",
+    "patente",
+    "impuesto a los automotores",
+  ],
+  pyme: [
+    "pyme",
+    "pymes",
+    "mipyme",
+    "mi pyme",
+    "micro",
+    "pequena",
+    "pequeña",
+    "mediana",
+    "sme",
+  ],
+  pba: ["provincia de buenos aires", "pba", "arba", "buenos aires"],
+  iibb: [
+    "ingresos brutos",
+    "iibb",
+    "regimen simplificado",
+    "régimen simplificado",
+  ],
+};
+type AnchorGroups = string[][];
+
+function buildAnchorGroupsFromQuery(
+  q: string,
+  jurisdictionHint?: string
+): AnchorGroups {
+  const nq = norm(q);
+  const groups: AnchorGroups = [];
+  // heurística: si menciona automotores/patente → usar automotor+exención, y si menciona PyME → agregar pyme
+  if (/(automotor|patente|rodado|vehicul)/.test(nq)) groups.push(LEX.automotor);
+  if (/(exenci|exento|eximase|exceptuase|no alcanzad)/.test(nq))
+    groups.push(LEX.exencion);
+  if (/(pyme|mipyme|micro|pequen|mediana|sme)/.test(nq)) groups.push(LEX.pyme);
+  if (/(ingresos brutos|iibb|simplificado)/.test(nq)) groups.push(LEX.iibb);
+  if (jurisdictionHint === "AR-BA" || /(buenos aires|pba|arba)/.test(nq))
+    groups.push(LEX.pba);
+
+  // default razonable si no detectamos nada
+  if (groups.length === 0) groups.push(LEX.exencion);
+
+  return groups;
+}
+function hasCooccurrence(
+  text: string,
+  groups: AnchorGroups,
+  minGroupsHit = 2
+): boolean {
+  const t = norm(text);
+  let hits = 0;
+  for (const g of groups) if (g.some((w) => t.includes(norm(w)))) hits++;
+  return hits >= minGroupsHit;
+}
+function filterByCooccurrence<T extends { content: string }>(
+  chunks: T[],
+  groups: AnchorGroups,
+  minGroupsHit = 2
+): T[] {
+  return chunks.filter((c) => hasCooccurrence(c.content, groups, minGroupsHit));
+}
+function rewriteQueryStrict(groups: AnchorGroups): string {
+  return groups
+    .map((g) => "(" + g.map((w) => `"${w}"`).join(" OR ") + ")")
+    .join(" ");
+}
+function rewriteQueryExpanded(groups: AnchorGroups): string {
+  const flat = [...new Set(groups.flat())];
+  return flat.map((w) => `"${w}"`).join(" OR ");
+}
+
 const requestSchema = z.object({
   passcode: z.string().min(4).optional(),
-  query: z.string().min(3),
-  k: z.number().int().min(1).max(12).optional(),
-  perDoc: z.number().int().min(1).max(5).optional(),
+  query: z.string().min(2),
+  k: z.number().int().min(1).max(20).optional(),
+  perDoc: z.number().int().min(1).max(6).optional(),
   minSim: z.number().min(0).max(1).optional(),
   reranker: z.enum(["lexical", "mmr"]).optional(),
   filters: z
     .object({
-      // Soportado hoy:
       pathLike: z.string().optional(),
-      // Aceptamos pero hoy se ignoran (no existen en la DB):
-      jurisdiccion: z.array(z.string()).optional(),
+      jurisdiccion: z.array(z.string()).optional(), // aceptado para futuro
       tipo: z.array(z.string()).optional(),
       anioMin: z.number().int().optional(),
       anioMax: z.number().int().optional(),
     })
     .optional(),
+  // Hint opcional para robustez
+  jurisdictionHint: z.enum(["AR-BA", "AR-CABA", "AR-CBA", "AR-NAC"]).optional(),
 });
 
 async function verifyPasscode(passcode?: string) {
   if (!passcode)
     return { authenticated: false, userId: undefined as string | undefined };
   const invited = await prisma.invitedUser.findFirst({ where: { passcode } });
-  return {
-    authenticated: Boolean(invited),
-    userId: invited?.id,
-  };
+  return { authenticated: Boolean(invited), userId: invited?.id };
 }
 
 export async function search(req: IncomingMessage, res: ServerResponse) {
@@ -44,15 +139,14 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
 
   try {
     const chunks: Buffer[] = [];
-    for await (const chunk of req) {
+    for await (const chunk of req)
       chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-    }
     const rawBody = Buffer.concat(chunks).toString("utf8");
     const parsed = requestSchema.parse(rawBody ? JSON.parse(rawBody) : {});
 
     const { authenticated, userId } = await verifyPasscode(parsed.passcode);
 
-    // Limpieza de filtros vacíos
+    // Filtros
     const filters = parsed.filters ?? {};
     const cleanedFilters = Object.fromEntries(
       Object.entries(filters).filter(([, value]) =>
@@ -62,31 +156,84 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
       )
     );
 
-    // Solo pasamos los filtros soportados HOY al motor de búsqueda
-    const supportedOptions = {
-      perDoc: parsed.perDoc,
-      minSim: parsed.minSim,
-      pathLike: filters.pathLike, // único filtro real con el esquema actual
-      authenticated,
-      rerankMode: parsed.reranker,
-    } as const;
+    // pathLike por hint de jurisdicción
+    const autoPathLike =
+      parsed.jurisdictionHint === "AR-BA"
+        ? "provincial/ar-ba-%"
+        : parsed.jurisdictionHint === "AR-CABA"
+        ? "provincial/ar-caba-%"
+        : parsed.jurisdictionHint === "AR-CBA"
+        ? "provincial/ar-cba-%"
+        : undefined;
 
-    const result = await searchDocuments(
+    const pathLike = filters.pathLike ?? autoPathLike;
+
+    // Anclas desde la query
+    const groups = buildAnchorGroupsFromQuery(
       parsed.query,
-      parsed.k ?? 6,
-      supportedOptions
+      parsed.jurisdictionHint
     );
+
+    // Fase 1: léxica estricta con co-ocurrencia (>=2 grupos por defecto)
+    const qStrict = rewriteQueryStrict(groups);
+    let result = await searchDocuments(qStrict, parsed.k ?? 12, {
+      authenticated,
+      pathLike,
+      rerankMode: "lexical",
+      perDoc: parsed.perDoc ?? 4,
+      minSim: parsed.minSim ?? 0.35,
+    });
+    let filtered = filterByCooccurrence(result.chunks, groups, 2);
+
+    let phase = "lexical-strict";
+    if (filtered.length === 0) {
+      // Fase 2: MMR expandida
+      const qExpanded = `${rewriteQueryExpanded(groups)} ${parsed.query}`;
+      result = await searchDocuments(qExpanded, parsed.k ?? 12, {
+        authenticated,
+        pathLike,
+        rerankMode: "mmr",
+        perDoc: parsed.perDoc ?? 4,
+        minSim: parsed.minSim ?? 0.35,
+      });
+      filtered = filterByCooccurrence(result.chunks, groups, 2);
+      phase = "mmr-expanded";
+    }
+
+    if (filtered.length === 0) {
+      // Fase 3: negativa (exención + automotor) para listar capítulo
+      const relaxedGroups: AnchorGroups = groups.some(
+        (g) => g === LEX.automotor
+      )
+        ? [LEX.exencion, LEX.automotor]
+        : [LEX.exencion];
+      const qRelaxed = rewriteQueryStrict(relaxedGroups);
+      result = await searchDocuments(qRelaxed, parsed.k ?? 12, {
+        authenticated,
+        pathLike,
+        rerankMode: "lexical",
+        perDoc: parsed.perDoc ?? 4,
+        minSim: parsed.minSim ?? 0.35,
+      });
+      filtered = filterByCooccurrence(
+        result.chunks,
+        relaxedGroups,
+        Math.min(2, relaxedGroups.length)
+      );
+      phase = "negative-evidence";
+      (result.metrics as any).relaxed = true;
+    }
 
     // Auditoría
     await recordSearchAudit({
       userId,
       passcodeValid: authenticated,
       query: parsed.query,
-      filters: cleanedFilters, // registramos todo lo recibido
-      metrics: result.metrics,
+      filters: cleanedFilters,
+      metrics: { ...(result.metrics as any), phase, pathLike },
     });
 
-    // Señalamos qué filtros fueron ignorados (si los mandaron)
+    // Ignorados (hoy no soportados)
     const ignoredFilters: string[] = [];
     if ("jurisdiccion" in cleanedFilters) ignoredFilters.push("jurisdiccion");
     if ("tipo" in cleanedFilters) ignoredFilters.push("tipo");
@@ -96,10 +243,11 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
-        results: result.chunks,
-        metrics: result.metrics,
+        results: filtered,
+        metrics: { ...(result.metrics as any), phase, pathLike },
         authenticated,
         ignoredFilters: ignoredFilters.length ? ignoredFilters : undefined,
+        anchorsUsed: groups, // útil para depurar qué sinónimos se aplicaron
       })
     );
   } catch (error) {

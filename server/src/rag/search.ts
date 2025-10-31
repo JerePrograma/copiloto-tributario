@@ -3,7 +3,10 @@ import { prisma } from "../lib/prisma";
 import { embed } from "../lib/ollama";
 import { sanitizeContext } from "../security/sanitize";
 import { rerankChunks, type RerankerMode } from "./rerank";
-import { restrictedJurisdictions, sanitizeJurisdictions } from "../security/policies";
+import {
+  restrictedJurisdictions,
+  sanitizeJurisdictions,
+} from "../security/policies";
 
 export interface RetrievedChunk {
   id: string;
@@ -84,8 +87,14 @@ export async function searchDocuments(
   const perDoc = Math.max(1, Math.min(opts.perDoc ?? 3, 10));
   const minSim = Math.max(0, Math.min(opts.minSim ?? 0.15, 0.999));
   const fetchN = K * 4; // traemos de más para poder diversificar
-  const vectorWeight = Math.max(0, Math.min(opts.vectorWeight ?? 0.7, 1));
-  const textWeight = Math.max(0, Math.min(opts.textWeight ?? 0.3, 1));
+  const tokens = query.trim().split(/\s+/).length;
+  const legalist = /(exenci[oó]n|patente|automotores?|pymes?)/i.test(query);
+  const textWeightAuto =
+    opts.textWeight ?? (tokens <= 6 || legalist ? 0.6 : 0.3);
+  const vectorWeightAuto = opts.vectorWeight ?? 1 - textWeightAuto;
+
+  const vectorWeight = Math.max(0, Math.min(vectorWeightAuto, 1));
+  const textWeight = Math.max(0, Math.min(textWeightAuto, 1));
   const auth = Boolean(opts.authenticated);
   const restricted = restrictedJurisdictions(auth);
   const sanitizedJurisdictions = sanitizeJurisdictions(opts.jurisdiccion, auth);
@@ -113,14 +122,18 @@ export async function searchDocuments(
   if (opts.anioMax) where.push(`d."anio" <= ${Math.floor(opts.anioMax)}`);
   if (restricted.length) {
     const notIn = restricted.map((s) => `'${q(s)}'`).join(",");
-    where.push(`(d."jurisdiccion" IS NULL OR d."jurisdiccion" NOT IN (${notIn}))`);
+    where.push(
+      `(d."jurisdiccion" IS NULL OR d."jurisdiccion" NOT IN (${notIn}))`
+    );
   }
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
   // 3) Búsqueda híbrida: vector + FTS en la misma consulta
   const sqlStart = performance.now();
-  const textRankExpr = `ts_rank_cd(setweight(to_tsvector('spanish', coalesce(d."title", '')), 'A') || setweight(to_tsvector('spanish', c."content"), 'B'), plainto_tsquery('spanish', '${q(query)}'))`;
+  const textRankExpr = `ts_rank_cd(setweight(to_tsvector('spanish', coalesce(d."title", '')), 'A') || setweight(to_tsvector('spanish', c."content"), 'B'), plainto_tsquery('spanish', '${q(
+    query
+  )}'))`;
   const rows = await prisma.$queryRawUnsafe<
     Array<{
       id: string;

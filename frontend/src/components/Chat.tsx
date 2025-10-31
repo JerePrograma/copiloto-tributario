@@ -21,8 +21,6 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
-  citations?: Citation[];
-  claims?: ClaimCheckEntry[];
   error?: string;
 }
 
@@ -48,9 +46,16 @@ interface ClaimEventPayload {
   claims: ClaimCheckEntry[];
 }
 
-const API_BASE = (process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001").replace(/\/$/, "");
+const API_BASE = (
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001"
+).replace(/\/$/, "");
 
-export default function Chat({ onMetrics, onTimeline, onCitations, onClaims }: ChatProps) {
+export default function Chat({
+  onMetrics,
+  onTimeline,
+  onCitations,
+  onClaims,
+}: ChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [passcode, setPasscode] = useState("");
@@ -64,9 +69,14 @@ export default function Chat({ onMetrics, onTimeline, onCitations, onClaims }: C
     setMessages((prev) => [...prev, message]);
   }, []);
 
-  const updateMessage = useCallback((id: string, updater: (msg: ChatMessage) => ChatMessage) => {
-    setMessages((prev) => prev.map((msg) => (msg.id === id ? updater(msg) : msg)));
-  }, []);
+  const updateMessage = useCallback(
+    (id: string, updater: (msg: ChatMessage) => ChatMessage) => {
+      setMessages((prev) =>
+        prev.map((msg) => (msg.id === id ? updater(msg) : msg))
+      );
+    },
+    []
+  );
 
   const pushTimeline = useCallback(
     (event: TimelineEvent) => {
@@ -100,6 +110,7 @@ export default function Chat({ onMetrics, onTimeline, onCitations, onClaims }: C
       }
       if (!activeMessageId.current) return;
       const currentId = activeMessageId.current;
+
       switch (event.event) {
         case "token": {
           const { text } = event.data as { text: string };
@@ -110,21 +121,15 @@ export default function Chat({ onMetrics, onTimeline, onCitations, onClaims }: C
           break;
         }
         case "context": {
+          // Panel lateral: citas. No tocar el bubble.
           const { citations } = event.data as ContextEventPayload;
           onCitations(citations);
-          updateMessage(currentId, (msg) => ({
-            ...msg,
-            citations,
-          }));
           break;
         }
         case "claimcheck": {
+          // Panel/overlay: claim-check. No tocar el bubble.
           const { claims } = event.data as ClaimEventPayload;
           onClaims(claims);
-          updateMessage(currentId, (msg) => ({
-            ...msg,
-            claims,
-          }));
           break;
         }
         case "metrics": {
@@ -137,7 +142,10 @@ export default function Chat({ onMetrics, onTimeline, onCitations, onClaims }: C
             payload.detail && typeof payload.detail !== "string"
               ? JSON.stringify(payload.detail, null, 2)
               : (payload.detail as string | undefined);
-          const statusMap: Record<ToolEventPayload["status"], TimelineEvent["status"]> = {
+          const statusMap: Record<
+            ToolEventPayload["status"],
+            TimelineEvent["status"]
+          > = {
             start: "pending",
             success: "ok",
             error: "error",
@@ -149,6 +157,11 @@ export default function Chat({ onMetrics, onTimeline, onCitations, onClaims }: C
             detail: detailString,
             durationMs: payload.durationMs,
           });
+          break;
+        }
+        case "amendment": {
+          // Opcional: marcar visualmente el bubble como “ajustado por evidencia”.
+          // No se inyecta contenido.
           break;
         }
         case "error": {
@@ -175,7 +188,14 @@ export default function Chat({ onMetrics, onTimeline, onCitations, onClaims }: C
           break;
       }
     },
-    [appendMessage, onClaims, onCitations, onMetrics, pushTimeline, updateMessage]
+    [
+      appendMessage,
+      onClaims,
+      onCitations,
+      onMetrics,
+      pushTimeline,
+      updateMessage,
+    ]
   );
 
   const resetTimeline = useCallback(() => {
@@ -186,6 +206,7 @@ export default function Chat({ onMetrics, onTimeline, onCitations, onClaims }: C
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       if (!input.trim() || isStreaming) return;
+
       const userMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "user",
@@ -206,26 +227,30 @@ export default function Chat({ onMetrics, onTimeline, onCitations, onClaims }: C
       };
 
       controllerRef.current?.abort();
-      const controller = startSSE(chatEndpoint, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      }, {
-        onEvent: handleSSEEvent,
-        onError: (error) => {
-          const errorMessage: ChatMessage = {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: "",
-            error: error.message,
-          };
-          appendMessage(errorMessage);
-          activeMessageId.current = null;
-          setStreaming(false);
+      const controller = startSSE(
+        chatEndpoint,
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
         },
-        onClose: () => {
-          setStreaming(false);
-        },
-      });
+        {
+          onEvent: handleSSEEvent,
+          onError: (error) => {
+            const errorMessage: ChatMessage = {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: "",
+              error: error.message,
+            };
+            appendMessage(errorMessage);
+            activeMessageId.current = null;
+            setStreaming(false);
+          },
+          onClose: () => {
+            setStreaming(false);
+          },
+        }
+      );
       controllerRef.current = controller;
     },
     [
@@ -262,6 +287,7 @@ export default function Chat({ onMetrics, onTimeline, onCitations, onClaims }: C
           passcode para habilitar herramientas.
         </p>
       </header>
+
       <div className="chat-history">
         {messages.length === 0 ? (
           <div className="empty">Inicia la conversación con una consulta.</div>
@@ -269,34 +295,12 @@ export default function Chat({ onMetrics, onTimeline, onCitations, onClaims }: C
           <ul>
             {messages.map((msg) => (
               <li key={msg.id} className={`bubble ${msg.role}`}>
-                <div className="bubble-role">{msg.role === "user" ? "Tú" : "Copiloto"}</div>
+                <div className="bubble-role">
+                  {msg.role === "user" ? "Tú" : "Copiloto"}
+                </div>
                 <div className="bubble-content">{msg.content}</div>
-                {msg.error ? <div className="bubble-error">{msg.error}</div> : null}
-                {msg.citations && msg.citations.length > 0 ? (
-                  <ul className="citations">
-                    {msg.citations.map((citation) => (
-                      <li key={citation.id}>
-                        <a href={citation.href} target="_blank" rel="noreferrer">
-                          {citation.title} ({citation.similarity.toFixed(3)})
-                        </a>
-                        <p>{citation.snippet}</p>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-                {msg.claims && msg.claims.length > 0 ? (
-                  <ul className="claims">
-                    {msg.claims.map((claim, idx) => (
-                      <li key={`${msg.id}-claim-${idx}`} className={claim.status}>
-                        <span className="claim-status">
-                          {claim.status === "supported"
-                            ? "Evidencia"
-                            : "Sin evidencia"}
-                        </span>
-                        <p>{claim.sentence}</p>
-                      </li>
-                    ))}
-                  </ul>
+                {msg.error ? (
+                  <div className="bubble-error">{msg.error}</div>
                 ) : null}
                 {msg.streaming ? <span className="typing">▍</span> : null}
               </li>
@@ -304,6 +308,7 @@ export default function Chat({ onMetrics, onTimeline, onCitations, onClaims }: C
           </ul>
         )}
       </div>
+
       <footer className="chat-footer">
         <form onSubmit={handleSubmit} className="chat-form">
           <div className="form-row">
