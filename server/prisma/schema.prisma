@@ -75,19 +75,27 @@ model FollowUp {
 }
 
 model Doc {
-  id        String     @id @default(cuid())
-  path      String
-  title     String
-  jurisdiccion String?
-  tipo      String?
-  anio      Int?
-  metadata  Json?
-  version   Int        @default(1)
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-  chunks    DocChunk[]
+  id           String     @id @default(cuid())
+  path         String
+  title        String
+  // --- metadatos “core” para filtros rápidos
+  slug         String?    @db.VarChar(120)
+  jurisdiccion String?    @db.VarChar(20)
+  organismo    String?
+  tipo         String?
+  anio         Int?
+  publicacion  String?
+  fuenteUrl    String?
+  // --- resto del front-matter crudo
+  metadata     Json?
+
+  version     Int        @default(1)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  chunks      DocChunk[]
 
   @@unique([path, version])
+  @@index([jurisdiccion, tipo, anio])
 }
 
 model DocChunk {
@@ -99,6 +107,7 @@ model DocChunk {
   startChar  Int
   endChar    Int
   href       String?
+  // Prisma no tipa vector; lo dejamos como Unsupported
   embedding  Unsupported("vector")?
 
   doc Doc @relation(fields: [docId], references: [id], onDelete: Cascade)
@@ -117,6 +126,8 @@ model PromptAudit {
   citations      Json
   metrics        Json?
   jurisdiction   String?
+
+  @@index([createdAt])
 }
 
 model SearchAudit {
@@ -127,4 +138,6 @@ model SearchAudit {
   query         String
   filters       Json?
   metrics       Json?
+
+  @@index([createdAt])
 }

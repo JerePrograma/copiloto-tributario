@@ -1,3 +1,4 @@
+// src/api/search.ts
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
@@ -13,7 +14,9 @@ const requestSchema = z.object({
   reranker: z.enum(["lexical", "mmr"]).optional(),
   filters: z
     .object({
+      // Soportado hoy:
       pathLike: z.string().optional(),
+      // Aceptamos pero hoy se ignoran (no existen en la DB):
       jurisdiccion: z.array(z.string()).optional(),
       tipo: z.array(z.string()).optional(),
       anioMin: z.number().int().optional(),
@@ -23,7 +26,8 @@ const requestSchema = z.object({
 });
 
 async function verifyPasscode(passcode?: string) {
-  if (!passcode) return { authenticated: false, userId: undefined as string | undefined };
+  if (!passcode)
+    return { authenticated: false, userId: undefined as string | undefined };
   const invited = await prisma.invitedUser.findFirst({ where: { passcode } });
   return {
     authenticated: Boolean(invited),
@@ -48,6 +52,7 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
 
     const { authenticated, userId } = await verifyPasscode(parsed.passcode);
 
+    // Limpieza de filtros vacíos
     const filters = parsed.filters ?? {};
     const cleanedFilters = Object.fromEntries(
       Object.entries(filters).filter(([, value]) =>
@@ -56,25 +61,37 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
           : value !== undefined && value !== null && value !== ""
       )
     );
-    const result = await searchDocuments(parsed.query, parsed.k ?? 6, {
+
+    // Solo pasamos los filtros soportados HOY al motor de búsqueda
+    const supportedOptions = {
       perDoc: parsed.perDoc,
       minSim: parsed.minSim,
-      pathLike: filters.pathLike,
-      jurisdiccion: filters.jurisdiccion,
-      tipo: filters.tipo,
-      anioMin: filters.anioMin,
-      anioMax: filters.anioMax,
+      pathLike: filters.pathLike, // único filtro real con el esquema actual
       authenticated,
       rerankMode: parsed.reranker,
-    });
+    } as const;
 
+    const result = await searchDocuments(
+      parsed.query,
+      parsed.k ?? 6,
+      supportedOptions
+    );
+
+    // Auditoría
     await recordSearchAudit({
       userId,
       passcodeValid: authenticated,
       query: parsed.query,
-      filters: cleanedFilters,
+      filters: cleanedFilters, // registramos todo lo recibido
       metrics: result.metrics,
     });
+
+    // Señalamos qué filtros fueron ignorados (si los mandaron)
+    const ignoredFilters: string[] = [];
+    if ("jurisdiccion" in cleanedFilters) ignoredFilters.push("jurisdiccion");
+    if ("tipo" in cleanedFilters) ignoredFilters.push("tipo");
+    if ("anioMin" in cleanedFilters || "anioMax" in cleanedFilters)
+      ignoredFilters.push("anioMin/anioMax");
 
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
@@ -82,14 +99,18 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
         results: result.chunks,
         metrics: result.metrics,
         authenticated,
+        ignoredFilters: ignoredFilters.length ? ignoredFilters : undefined,
       })
     );
   } catch (error) {
-    const isValidation = error instanceof z.ZodError || error instanceof SyntaxError;
+    const isValidation =
+      error instanceof z.ZodError || error instanceof SyntaxError;
     const message = isValidation
       ? (error as Error).message
       : (error as Error).message ?? "Unexpected error";
-    res.writeHead(isValidation ? 400 : 500, { "Content-Type": "application/json" });
+    res.writeHead(isValidation ? 400 : 500, {
+      "Content-Type": "application/json",
+    });
     res.end(JSON.stringify({ error: message }));
   }
 }

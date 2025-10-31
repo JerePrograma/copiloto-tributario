@@ -1,5 +1,3 @@
-CREATE EXTENSION IF NOT EXISTS vector;
-
 -- CreateEnum
 CREATE TYPE "FollowUpStatus" AS ENUM ('PENDING', 'DONE', 'CANCELED');
 
@@ -69,8 +67,17 @@ CREATE TABLE "Doc" (
     "id" TEXT NOT NULL,
     "path" TEXT NOT NULL,
     "title" TEXT NOT NULL,
+    "slug" VARCHAR(120),
+    "jurisdiccion" VARCHAR(20),
+    "organismo" TEXT,
+    "tipo" TEXT,
+    "anio" INTEGER,
+    "publicacion" TEXT,
+    "fuenteUrl" TEXT,
+    "metadata" JSONB,
     "version" INTEGER NOT NULL DEFAULT 1,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "Doc_pkey" PRIMARY KEY ("id")
 );
@@ -85,9 +92,38 @@ CREATE TABLE "DocChunk" (
     "startChar" INTEGER NOT NULL,
     "endChar" INTEGER NOT NULL,
     "href" TEXT,
-    "embedding" vector(768),
+    "embedding" vector,
 
     CONSTRAINT "DocChunk_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "PromptAudit" (
+    "id" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "requestId" TEXT NOT NULL,
+    "userId" TEXT,
+    "passcodeValid" BOOLEAN NOT NULL DEFAULT false,
+    "question" TEXT NOT NULL,
+    "response" TEXT NOT NULL,
+    "citations" JSONB NOT NULL,
+    "metrics" JSONB,
+    "jurisdiction" TEXT,
+
+    CONSTRAINT "PromptAudit_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "SearchAudit" (
+    "id" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "userId" TEXT,
+    "passcodeValid" BOOLEAN NOT NULL DEFAULT false,
+    "query" TEXT NOT NULL,
+    "filters" JSONB,
+    "metrics" JSONB,
+
+    CONSTRAINT "SearchAudit_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateIndex
@@ -100,10 +136,19 @@ CREATE UNIQUE INDEX "Session_token_key" ON "Session"("token");
 CREATE INDEX "FollowUp_leadId_dueAt_idx" ON "FollowUp"("leadId", "dueAt");
 
 -- CreateIndex
+CREATE INDEX "Doc_jurisdiccion_tipo_anio_idx" ON "Doc"("jurisdiccion", "tipo", "anio");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Doc_path_version_key" ON "Doc"("path", "version");
 
 -- CreateIndex
 CREATE INDEX "DocChunk_docId_idx_idx" ON "DocChunk"("docId", "idx");
+
+-- CreateIndex
+CREATE INDEX "PromptAudit_createdAt_idx" ON "PromptAudit"("createdAt");
+
+-- CreateIndex
+CREATE INDEX "SearchAudit_createdAt_idx" ON "SearchAudit"("createdAt");
 
 -- AddForeignKey
 ALTER TABLE "Session" ADD CONSTRAINT "Session_userId_fkey" FOREIGN KEY ("userId") REFERENCES "InvitedUser"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -122,6 +167,3 @@ ALTER TABLE "FollowUp" ADD CONSTRAINT "FollowUp_leadId_fkey" FOREIGN KEY ("leadI
 
 -- AddForeignKey
 ALTER TABLE "DocChunk" ADD CONSTRAINT "DocChunk_docId_fkey" FOREIGN KEY ("docId") REFERENCES "Doc"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
-CREATE INDEX IF NOT EXISTS "DocChunk_embedding_idx"
-  ON "DocChunk" USING ivfflat ("embedding" vector_cosine_ops) WITH (lists = 100);

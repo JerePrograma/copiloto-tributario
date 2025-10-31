@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import * as fs from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { prisma } from "../lib/prisma";
@@ -8,42 +8,50 @@ import { chunkText } from "./chunk";
 import { embed } from "../lib/ollama";
 import { extractFrontMatter, normalizeLegalMetadata } from "./metadata";
 
-// -------- CLI root: --root > env.DOCS_ROOT > default ../../data
+// --- CLI: --root > DOCS_ROOT > heurísticas locales
 function getArg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 const rootArg = getArg("--root");
-export const effectiveRoot = rootArg
-  ? resolve(process.cwd(), rootArg)
-  : env.DOCS_ROOT
-  ? resolve(process.cwd(), env.DOCS_ROOT)
-  : resolve(__dirname, "../../data");
 
+const candidates = [
+  rootArg ? resolve(process.cwd(), rootArg) : null,
+  env.DOCS_ROOT ? resolve(process.cwd(), env.DOCS_ROOT) : null,
+  resolve(process.cwd(), "../data"),
+  resolve(process.cwd(), "data"),
+  resolve(process.cwd(), "../../data"),
+].filter(Boolean) as string[];
+
+const effectiveRoot = candidates.find((p) => fs.existsSync(p));
+if (!effectiveRoot) {
+  console.error(
+    "No se encontró carpeta de datos. Probé:",
+    candidates.join(" | ")
+  );
+  process.exit(2);
+}
 console.log("INGEST_ROOT =", effectiveRoot, " argv=", process.argv.slice(2));
 
-// -------- Walk
+// --- Walk
 export function* walk(dir: string): Generator<string> {
-  for (const entry of readdirSync(dir)) {
+  for (const entry of fs.readdirSync(dir)) {
     const full = join(dir, entry);
-    const stats = statSync(full);
-    if (stats.isDirectory()) {
-      yield* walk(full);
-    } else if (/\.(md|txt|html)$/i.test(entry)) {
-      yield full;
-    }
+    const stats = fs.statSync(full);
+    if (stats.isDirectory()) yield* walk(full);
+    else if (/\.(md|txt|html)$/i.test(entry)) yield full;
   }
 }
 
-// -------- Ingest one file
+// --- Ingest one file
 export async function ingestFile(filePath: string) {
   const relativePath = relative(effectiveRoot, filePath).replace(/\\/g, "/");
   const title = relativePath.split("/").pop() || relativePath;
-  const raw = readFileSync(filePath, "utf8");
+  const raw = fs.readFileSync(filePath, "utf8");
+
   const { body, metadata } = extractFrontMatter(raw);
   const normalized = normalizeLegalMetadata(metadata);
 
-  // upsert por (path, version) usando unique compuesto path_version
   const doc = await prisma.doc.upsert({
     where: { path_version: { path: relativePath, version: 1 } },
     update: {
@@ -64,7 +72,6 @@ export async function ingestFile(filePath: string) {
     },
   });
 
-  // reindex completo del doc
   await prisma.docChunk.deleteMany({ where: { docId: doc.id } });
 
   const chunks = chunkText(body, 700, 120);
@@ -84,7 +91,6 @@ export async function ingestFile(filePath: string) {
     });
 
     const { vector, tMs } = await embed(chunk.content);
-    // Persistencia vía SQL crudo (pgvector)
     const vectorLiteral =
       "[" + vector.map((v) => Number(v).toFixed(6)).join(",") + "]";
     await prisma.$executeRawUnsafe(
@@ -94,7 +100,7 @@ export async function ingestFile(filePath: string) {
   }
 }
 
-// -------- Main
+// --- Main
 async function main() {
   const start = performance.now();
   let count = 0;
@@ -105,8 +111,7 @@ async function main() {
   const totalMs = Math.round(performance.now() - start);
   console.log(`Ingesta completada: ${count} archivos en ${totalMs} ms`);
 }
-
-main().catch((error) => {
-  console.error(error);
+main().catch((err) => {
+  console.error(err);
   process.exit(1);
 });

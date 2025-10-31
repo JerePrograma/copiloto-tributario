@@ -1,4 +1,4 @@
-import { z } from "zod";
+// metadata.ts — sin Zod en el hot-path, defensivo
 
 export interface LegalMetadata {
   jurisdiccion?: string;
@@ -7,8 +7,6 @@ export interface LegalMetadata {
   tags?: string[];
   raw?: Record<string, unknown>;
 }
-
-const frontMatterSchema = z.record(z.any());
 
 const JURISDICTION_ALIASES: Record<string, string> = {
   caba: "AR-CABA",
@@ -24,6 +22,12 @@ const TYPE_ALIASES: Record<string, string> = {
   ordenanza: "ORDENANZA",
   resolucion: "RESOLUCION",
 };
+
+function asRecord(u: unknown): Record<string, unknown> {
+  return u && typeof u === "object" && !Array.isArray(u)
+    ? (u as Record<string, unknown>)
+    : {};
+}
 
 function normalizeJurisdiction(value?: string): string | undefined {
   if (!value) return undefined;
@@ -46,60 +50,69 @@ function normalizeAnio(value?: unknown): number | undefined {
   return year;
 }
 
-export function extractFrontMatter(raw: string): { body: string; metadata: Record<string, unknown> } {
-  if (!raw.startsWith("---")) {
-    return { body: raw, metadata: {} };
-  }
+// Front matter muy simple: YAML-lite línea a línea
+export function extractFrontMatter(raw: string): {
+  body: string;
+  metadata: Record<string, unknown>;
+} {
+  if (!raw.startsWith("---")) return { body: raw, metadata: {} };
   const end = raw.indexOf("\n---", 3);
-  if (end === -1) {
-    return { body: raw, metadata: {} };
-  }
+  if (end === -1) return { body: raw, metadata: {} };
+
   const header = raw.slice(3, end).trim();
   const body = raw.slice(end + 4).replace(/^\s+/, "");
   const metadata: Record<string, unknown> = {};
+
   for (const line of header.split(/\r?\n/)) {
-    const [key, ...rest] = line.split(":");
-    if (!key || rest.length === 0) continue;
-    const value = rest.join(":").trim();
-    if (!value) continue;
-    if (/^\[.*\]$/.test(value)) {
-      metadata[key.trim()] = value
+    const [keyRaw, ...rest] = line.split(":");
+    const key = keyRaw?.trim();
+    const valueStr = rest.join(":").trim();
+    if (!key || !valueStr) continue;
+
+    // array tipo [a, b, c]
+    if (/^\[.*\]$/.test(valueStr)) {
+      const arr = valueStr
         .slice(1, -1)
         .split(",")
         .map((v) => v.trim())
-        .filter((v) => v.length > 0);
+        .filter(Boolean);
+      metadata[key] = arr;
+    } else if (/^\d{4}$/.test(valueStr)) {
+      // año simple
+      metadata[key] = Number(valueStr);
     } else {
-      metadata[key.trim()] = value;
+      // quita comillas simples/dobles envolventes si existen
+      metadata[key] = valueStr.replace(/^['"]|['"]$/g, "");
     }
   }
   return { body, metadata };
 }
 
-export function normalizeLegalMetadata(rawMetadata: Record<string, unknown>): LegalMetadata {
-  const parsed = frontMatterSchema.parse(rawMetadata);
-  const jurisdiccion = normalizeJurisdiction(
+export function normalizeLegalMetadata(
+  rawMetadata: Record<string, unknown>
+): LegalMetadata {
+  const parsed = asRecord(rawMetadata);
+
+  const jVal =
     typeof parsed.jurisdiccion === "string"
       ? parsed.jurisdiccion
       : Array.isArray(parsed.jurisdiccion)
-      ? parsed.jurisdiccion[0]
-      : undefined
-  );
-  const tipo = normalizeTipo(
+      ? String(parsed.jurisdiccion[0] ?? "")
+      : undefined;
+
+  const tVal =
     typeof parsed.tipo === "string"
       ? parsed.tipo
       : Array.isArray(parsed.tipo)
-      ? parsed.tipo[0]
-      : undefined
-  );
+      ? String(parsed.tipo[0] ?? "")
+      : undefined;
+
+  const jurisdiccion = normalizeJurisdiction(jVal);
+  const tipo = normalizeTipo(tVal);
   const anio = normalizeAnio(parsed.anio);
-  const tags: string[] | undefined = Array.isArray(parsed.tags)
-    ? parsed.tags.map((tag) => String(tag).trim()).filter((tag) => tag.length > 0)
+  const tags = Array.isArray(parsed.tags)
+    ? parsed.tags.map((x) => String(x).trim()).filter(Boolean)
     : undefined;
-  return {
-    jurisdiccion,
-    tipo,
-    anio,
-    tags,
-    raw: parsed,
-  };
+
+  return { jurisdiccion, tipo, anio, tags, raw: parsed };
 }
