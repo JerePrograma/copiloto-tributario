@@ -11,9 +11,16 @@ export interface MetricsSnapshot {
   llmMs?: number;
   sqlMs?: number;
   embeddingMs?: number;
+  ftsMs?: number;
   k?: number;
   similarityAvg?: number;
   similarityMin?: number;
+  hybridAvg?: number;
+  hybridMin?: number;
+  reranked?: boolean;
+  restrictedCount?: number;
+  modelId?: string;
+  llmAttempts?: number;
 }
 
 interface TelemetryState {
@@ -26,6 +33,15 @@ interface TelemetryState {
     k: number;
     similarityAvg: number;
     similarityMin: number;
+    ftsMs?: number;
+    hybridAvg?: number;
+    hybridMin?: number;
+    reranked?: boolean;
+    restrictedCount?: number;
+  };
+  llm?: {
+    modelId?: string;
+    attempts?: number;
   };
   toolEvents: ToolTimelineEvent[];
 }
@@ -39,7 +55,13 @@ export interface Telemetry {
     k: number;
     similarityAvg: number;
     similarityMin: number;
+    ftsMs?: number;
+    hybridAvg?: number;
+    hybridMin?: number;
+    reranked?: boolean;
+    restrictedCount?: number;
   }) => void;
+  setLLMInfo: (info: { modelId?: string; attempts?: number }) => void;
   addToolEvent: (event: ToolTimelineEvent) => void;
   snapshot: () => MetricsSnapshot;
   timeline: () => ToolTimelineEvent[];
@@ -61,6 +83,9 @@ export function createTelemetry(): Telemetry {
     setSearchMetrics(metrics) {
       state.searchMetrics = metrics;
     },
+    setLLMInfo(info) {
+      state.llm = { ...info };
+    },
     addToolEvent(event) {
       state.toolEvents.push({ ...event });
     },
@@ -80,6 +105,17 @@ export function createTelemetry(): Telemetry {
         snapshot.k = state.searchMetrics.k;
         snapshot.similarityAvg = state.searchMetrics.similarityAvg;
         snapshot.similarityMin = state.searchMetrics.similarityMin;
+        if (state.searchMetrics.ftsMs !== undefined) {
+          snapshot.ftsMs = Math.round(state.searchMetrics.ftsMs);
+        }
+        snapshot.hybridAvg = state.searchMetrics.hybridAvg;
+        snapshot.hybridMin = state.searchMetrics.hybridMin;
+        snapshot.reranked = state.searchMetrics.reranked;
+        snapshot.restrictedCount = state.searchMetrics.restrictedCount;
+      }
+      if (state.llm) {
+        snapshot.modelId = state.llm.modelId;
+        snapshot.llmAttempts = state.llm.attempts;
       }
       return snapshot;
     },

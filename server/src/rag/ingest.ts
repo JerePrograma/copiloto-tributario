@@ -6,6 +6,7 @@ import { prisma } from "../lib/prisma";
 import { env } from "../lib/env";
 import { chunkText } from "./chunk";
 import { embed } from "../lib/ollama";
+import { extractFrontMatter, normalizeLegalMetadata } from "./metadata";
 
 // -------- CLI root: --root > env.DOCS_ROOT > default ../../data
 function getArg(flag: string): string | undefined {
@@ -13,7 +14,7 @@ function getArg(flag: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 const rootArg = getArg("--root");
-const effectiveRoot = rootArg
+export const effectiveRoot = rootArg
   ? resolve(process.cwd(), rootArg)
   : env.DOCS_ROOT
   ? resolve(process.cwd(), env.DOCS_ROOT)
@@ -39,18 +40,34 @@ export async function ingestFile(filePath: string) {
   const relativePath = relative(effectiveRoot, filePath).replace(/\\/g, "/");
   const title = relativePath.split("/").pop() || relativePath;
   const raw = readFileSync(filePath, "utf8");
+  const { body, metadata } = extractFrontMatter(raw);
+  const normalized = normalizeLegalMetadata(metadata);
 
   // upsert por (path, version) usando unique compuesto path_version
   const doc = await prisma.doc.upsert({
     where: { path_version: { path: relativePath, version: 1 } },
-    update: { title },
-    create: { path: relativePath, title, version: 1 },
+    update: {
+      title,
+      jurisdiccion: normalized.jurisdiccion ?? null,
+      tipo: normalized.tipo ?? null,
+      anio: normalized.anio ?? null,
+      metadata: normalized.raw ?? {},
+    },
+    create: {
+      path: relativePath,
+      title,
+      version: 1,
+      jurisdiccion: normalized.jurisdiccion ?? null,
+      tipo: normalized.tipo ?? null,
+      anio: normalized.anio ?? null,
+      metadata: normalized.raw ?? {},
+    },
   });
 
   // reindex completo del doc
   await prisma.docChunk.deleteMany({ where: { docId: doc.id } });
 
-  const chunks = chunkText(raw, 700, 120);
+  const chunks = chunkText(body, 700, 120);
   console.log(`Indexando ${relativePath}: ${chunks.length} chunks`);
 
   for (const chunk of chunks) {

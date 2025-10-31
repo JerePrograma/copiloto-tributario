@@ -11,3 +11,15 @@ export const openrouter = createOpenAI({
 });
 
 export const defaultModel = () => openrouter(env.OPENROUTER_MODEL);
+
+export function modelFor(modelId: string) {
+  return openrouter(modelId);
+}
+
+export function resolveModelSequence(): string[] {
+  const fallbacks = env.OPENROUTER_FALLBACK_MODELS
+    ? env.OPENROUTER_FALLBACK_MODELS.split(",").map((item) => item.trim()).filter(Boolean)
+    : [];
+  const sequence = [env.OPENROUTER_MODEL, ...fallbacks];
+  return Array.from(new Set(sequence));
+}
