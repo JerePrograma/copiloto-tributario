@@ -1,248 +1,152 @@
-# Copiloto Tributario – Plan Ajustado
+# Copiloto Tributario
 
-## 1. Arquitectura actualizada
+Asistente tributario con recuperación aumentada, evidencia auditable y herramientas comerciales livianas. El objetivo es responder preguntas sobre normativa, explicar documentos fiscales y ejecutar acciones básicas (leads, notas, follow-ups) con métricas técnicas en vivo.
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                              Frontend (Next.js)                     │
-│ ┌─────────────────────────────────────────────────────────────────┐ │
-│ │ Chat UI (App Router)                                            │ │
-│ │  • Componentes server/client desacoplados                      │ │
-│ │  • Hook SSE -> /api/chat con abort + retries                    │ │
-│ │  • Timeline herramientas + panel métricas en vivo               │ │
-│ │  • Gestión passcode + caché sesión                              │ │
-│ └─────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────┬──────────────────────────────────┘
-                                      │ HTTPS (SSE + JSON)
-┌─────────────────────────────────────▼──────────────────────────────────┐
-│                       Backend (Next.js API Routes)                     │
-│ ┌───────────────────────────────────────────────────────────────────┐ │
-│ │ /api/chat (AI SDK streamText)                                      │ │
-│ │  • Orquestador AI SDK (Vercel) + runtime Node                      │ │
-│ │  • Tool router tipado (zod) con límite iteraciones                 │ │
-│ │  • Búsqueda RAG + claim-checker                                    │ │
-│ │  • Telemetría granular (TTFB, LLM, SQL, embeddings, similitud)     │ │
-│ │  • Sanitización chunks + guardado audit trail                      │ │
-│ └───────────────────────────────────────────────────────────────────┘ │
-│ ┌───────────────────────────────────────────────────────────────────┐ │
-│ │ /api/metrics, /api/passcode, /api/docs                            │ │
-│ │  • Autenticación + rate limiting                                  │ │
-│ │  • Servicio de configuración (modelos, thresholds)                 │ │
-│ └───────────────────────────────────────────────────────────────────┘ │
-└───────────────────────────────┬────────────────────────────────────────┘
-                                │ Prisma Client + PgBouncer opcional
-┌───────────────────────────────▼────────────────────────────────────────┐
-│                       PostgreSQL 15 + pgvector 0.5.1                   │
-│ ┌───────────────────────────────────────────────────────────────────┐ │
-│ │ Tablas negocio (InvitedUser, Session, Lead, Note, FollowUp, Doc)   │ │
-│ │ DocChunk con embedding vector(768) + metadata JSONB                │ │
-│ │ Índices: btree (claves), GIN (texto), ivfflat opcional             │ │
-│ │ Funciones claim audit (jsonb_build_object)                         │ │
-│ └───────────────────────────────────────────────────────────────────┘ │
-└───────────────────────────────┬────────────────────────────────────────┘
-                                │ REST (HTTP/JSON)
-┌───────────────────────────────▼────────────────────────────────────────┐
-│                               Ollama                                   │
-│ ┌───────────────────────────────────────────────────────────────────┐ │
-│ │ Modelo embeddings nomic-embed-text                                 │ │
-│ │ Pool de conexiones limitado + timeout 8s                           │ │
-│ │ Métrica latencia enviada al backend                                │ │
-│ └───────────────────────────────────────────────────────────────────┘ │
-└────────────────────────────────────────────────────────────────────────┘
-```
-
-### Ajustes clave respecto al plan previo
-
-1. **Runtime Node dedicado en `/api/chat`**: forzamos `export const runtime = "nodejs";` para garantizar compatibilidad con AI SDK, Prisma y AbortController. Evita throttling edge y simplifica gestión de pools.
-2. **PgBouncer opcional**: en entornos productivos el compose incluye PgBouncer para estabilizar conexiones Prisma/Next.js durante streaming.
-3. **Servicio de configuración dinámica**: centraliza thresholds (similitud mínima, máximos tokens herramientas) y permite toggles A/B sin redeploy.
-4. **Audit trail**: cada interacción se persiste (prompt, chunks, claim-check resultado) para auditoría. Se añade tabla `AuditEvent` opcional (no requerida pero recomendada).
-5. **Rate limiting**: capa ligera con `@upstash/ratelimit` compatible con Next API para evitar abuso.
-6. **Timeboxing herramientas**: cada tool ejecuta en `Promise.race` con timeout configurable, registrando métricas de éxito/fallo.
-7. **Sanitización reforzada**: se limpian instrucciones con whitelist HTML + strip de directivas `<<SYS>>` dentro de chunks; se loguea si se detecta inyección.
-8. **Validación embeddings**: se controla `embedding.length === EMBEDDING_DIM` y se verifica que la norma L2 no sea cero (descarta texto vacío).
-9. **Claim-checker reforzado**: mezcla fuzzy matching (Jaro-Winkler) con umbral de token overlap. Pone bandera `unsupported_sentences` y lo reporta en stream.
-10. **Telemetría persistente**: se agrega almacenamiento circular en memoria + endpoint SSE `/api/metrics/stream` para panel en vivo.
-
-## 2. Decisiones justificadas
-
-| Decisión | Ajuste | Beneficio | Riesgo/Mitigación |
-| --- | --- | --- | --- |
-| AI SDK + streamText | Router de tools desacoplado y soporte reintentos | Menos acoplamiento, logging uniforme | Mantener versiones actualizadas del SDK y tests contractuales |
-| OpenRouter + Anthropic Haiku por defecto | Configurable vía `.env`; fallback `gpt-4o-mini` | Flexibilidad coste vs calidad; pruebas A/B | Manejar errores 429 con backoff exponencial |
-| Prisma + `$queryRaw` | Añadir vistas SQL para MMR (CTE) | Control total sobre ranking, manteniendo tipado | Revisar consultas en migraciones y testear con EXPLAIN |
-| pgvector `ivfflat` opcional | Crear migración con `ANALYZE` post index | Escala sin penalizar datasets pequeños | Requiere `REINDEX` si cambian parámetros; documentar |
-| Docker Compose con healthchecks | Servicios `postgres`, `pgbouncer`, `ollama`, `web` | Arranque reproducible y CI ready | Cuidar recursos en dev; permitir perfiles `docker compose --profile` |
-| Claim-checker pre-stream final | Usa pipeline determinista, fallback a marcar `No evidenciado` | Aumenta confianza audit | Debe ser rápido (<30ms/chunk); optimizar con caches |
-
-## 3. Estructura de repositorio revisada
+## Arquitectura
 
 ```
 copiloto-tributario/
-├─ README.md
 ├─ docker-compose.yml
-├─ env.example
-├─ package.json
-├─ prisma/
-│  ├─ schema.prisma
-│  └─ migrations/
-│     ├─ 2024XXXX_init/
-│     ├─ 2024XXXX_enable_pgvector.sql
-│     └─ 2024XXXX_docchunk_vector.sql
-├─ src/
-│  ├─ app/
-│  │  ├─ layout.tsx
-│  │  ├─ page.tsx
-│  │  └─ api/
-│  │     ├─ chat/route.ts
-│  │     ├─ metrics/route.ts
-│  │     ├─ metrics/stream/route.ts
-│  │     └─ passcode/route.ts
-│  ├─ server/
-│  │  ├─ config/index.ts
+├─ .env.example
+├─ data/                       # Corpus de normativa (DOCS_ROOT)
+├─ frontend/                   # Next.js + UI de chat/metrics
+│  ├─ next.config.mjs
+│  ├─ package.json
+│  └─ src/
+│     ├─ app/
+│     │  ├─ page.tsx          # Shell principal (chat + métricas)
+│     │  └─ api/health/route.ts
+│     ├─ components/
+│     │  ├─ AppShell.tsx
+│     │  ├─ Chat.tsx
+│     │  ├─ MetricsPanel.tsx
+│     │  └─ Timeline.tsx
+│     └─ lib/sse.ts            # Cliente SSE con abort y parsing
+├─ server/                     # Node.js + AI SDK + Prisma
+│  ├─ package.json
+│  ├─ prisma/
+│  │  ├─ schema.prisma
+│  │  └─ migrations/
+│  │     └─ 000_init/migration.sql  # Enable pgvector + tablas + índice ivfflat
+│  ├─ src/
+│  │  ├─ api/
+│  │  │  ├─ chat.ts           # Orquestación streamText + herramientas + SSE
+│  │  │  └─ dev-server.ts     # Servidor HTTP local (SSE + health)
+│  │  ├─ claimcheck/
+│  │  │  └─ claim_checker.ts  # Verificación oración-a-evidencia
 │  │  ├─ lib/
-│  │  │  ├─ prisma.ts
-│  │  │  ├─ ai-sdk.ts
-│  │  │  ├─ embeddings.ts
-│  │  │  ├─ rag/
-│  │  │  │  ├─ chunker.ts
-│  │  │  │  ├─ ingest.ts
-│  │  │  │  └─ search.ts
-│  │  │  ├─ claim-checker.ts
-│  │  │  ├─ metrics.ts
-│  │  │  ├─ guardrails.ts
-│  │  │  └─ auth.ts
-│  │  ├─ tools/
-│  │  │  ├─ index.ts
-│  │  │  ├─ verifyPasscode.ts
-│  │  │  ├─ createLead.ts
-│  │  │  ├─ recordNote.ts
-│  │  │  ├─ listNotes.ts
-│  │  │  ├─ scheduleFollowup.ts
-│  │  │  ├─ listFollowups.ts
-│  │  │  ├─ completeFollowup.ts
-│  │  │  └─ searchDocs.ts
-│  │  └─ telemetry/
-│  │     ├─ emitter.ts
-│  │     ├─ metrics-store.ts
-│  │     └─ types.ts
-│  ├─ hooks/
-│  │  └─ useChatStream.ts
-│  ├─ components/
-│  │  ├─ ChatWindow.tsx
-│  │  ├─ MetricsPanel.tsx
-│  │  ├─ ToolTimeline.tsx
-│  │  ├─ PasscodeDialog.tsx
-│  │  └─ EvidenceCitations.tsx
-│  └─ tests/
-│     ├─ unit/
-│     ├─ integration/
-│     └─ e2e/
-├─ scripts/
-│  ├─ ingest.ts
-│  └─ demo-script.md
-└─ tsconfig.json
+│  │  │  ├─ env.ts            # Variables de entorno tipadas con zod
+│  │  │  ├─ ollama.ts         # Embeddings via Ollama
+│  │  │  ├─ openrouter.ts     # Cliente OpenRouter (AI SDK)
+│  │  │  └─ prisma.ts
+│  │  ├─ metrics/telemetry.ts # Métricas TTFB, LLM, SQL, embeddings, timeline
+│  │  ├─ rag/
+│  │  │  ├─ chunk.ts          # Chunking configurable (700/120)
+│  │  │  ├─ ingest.ts         # Ingesta + embeddings + persistencia
+│  │  │  └─ search.ts         # Búsqueda pgvector + sanitización
+│  │  ├─ security/sanitize.ts # Guard rails anti prompt-injection
+│  │  └─ tools/index.ts       # Registro de tools (zod + Prisma + auth)
+│  └─ scripts/
+│     ├─ ingest_path.ts       # Ingesta puntual por archivo/carpeta
+│     └─ seed.ts              # Usuario demo con passcode
+└─ README.md
 ```
 
-Cambios vs plan previo: separamos `config/`, añadimos `telemetry/`, y reorganizamos APIs para reutilizar lógica server-only.
+## Stack
 
-## 4. Plan de implementación iterativo optimizado
+- **Frontend**: Next.js (App Router) con streaming SSE, UI de chat, panel de métricas y timeline de herramientas.
+- **Backend**: Node.js + [AI SDK](https://sdk.vercel.ai/) usando OpenRouter como provider de LLM.
+- **Embeddings**: [Ollama](https://ollama.com/) (`nomic-embed-text`).
+- **Base de datos**: PostgreSQL + `pgvector` (`ivfflat` listo para ANN).
+- **ORM**: Prisma.
+- **Claim checking**: coincidencia léxica oración-chunk con estatus `supported` / `no_evidence`.
 
-1. **Infraestructura y cimientos**
-   - Inicializar Next.js (App Router) con TypeScript, ESLint, Prettier.
-   - Configurar Docker Compose con servicios `postgres`, `pgvector` extension, `pgbouncer`, `ollama`, `web`.
-   - Añadir script `pnpm prisma migrate deploy` en entrypoint.
+## Puesta en marcha
 
-2. **Modelo de datos + migraciones**
-   - Escribir `schema.prisma` completo (Incl. `AuditEvent`).
-   - Crear migración SQL: `CREATE EXTENSION IF NOT EXISTS vector;` y columnas `embedding vector(768)`.
-   - Añadir migración opcional `CREATE INDEX ... USING ivfflat` documentada.
+1. **Infra básica**
+   ```bash
+   docker compose up -d
+   ```
+   Levanta PostgreSQL (pgvector) y Ollama.
 
-3. **Servicios core backend**
-   - Config `AI SDK` wrapper (modelo, retries, logging).
-   - Implementar tools Prisma con validaciones zod y auth.
-   - Añadir guardrails: passcode, rate limit, sanitización.
+2. **Variables de entorno**
+   ```bash
+   cp .env.example .env
+   ```
+   Ajusta `OPENROUTER_API_KEY` y, si es necesario, los puertos/URLs.
 
-4. **Pipeline RAG**
-   - Implementar chunker configurable (700/120) + normalización.
-   - Script `scripts/ingest.ts` con CLI (yargs) para cargar docs.
-   - Búsqueda con `$queryRaw` + MMR (CTE) + threshold.
+3. **Dependencias**
+   ```bash
+   pnpm install
+   ```
+   (Requiere acceso al registry npm para descargar `tsx`, Prisma, etc.).
 
-5. **Orquestación `/api/chat`**
-   - Construir flujo `streamText` + timeline de tools + claim-checker.
-   - Enviar métricas intermedias y finales vía `AIStreamResponse`.
-   - Persistir audit trail.
+4. **Base de datos**
+   ```bash
+   pnpm --filter server prisma migrate dev
+   pnpm --filter server prisma:generate
+   pnpm --filter server run seed
+   ```
 
-6. **Frontend WOW**
-   - Hook SSE confiable (`EventSource` + fallback fetch).
-   - UI chat con citas clicables y resaltado.
-   - Panel métricas y timeline (estado real time + badges).
+5. **Ingesta de normativa**
+   - Coloca archivos `.md|.txt|.html` en `data/`.
+   - Ejecuta:
+     ```bash
+     pnpm --filter server run ingest
+     # o para una ruta específica
+     pnpm --filter server run ingest:path data/ordenanzas
+     ```
 
-7. **Telemetría + observabilidad**
-   - Implementar `metrics-store` in-memory + SSE `/api/metrics/stream`.
-   - Mostrar en panel y registrar en audit trail.
-   - Enviar logs estructurados (pino) a STDOUT.
+6. **Servicios en desarrollo**
+   ```bash
+   pnpm --filter server dev        # backend SSE en http://localhost:3001
+   pnpm --filter frontend dev      # UI en http://localhost:3000
+   ```
 
-8. **Testing integral**
-   - Unit tests (Vitest) para chunker, claim-checker, tools (mocks Prisma).
-   - Integration (Node env) para RAG (Docker Compose en CI).
-   - E2E (Playwright) con flujo completo.
+   Configura `NEXT_PUBLIC_BACKEND_URL` (frontend) y `FRONTEND_ORIGIN` (backend) para permitir CORS.
 
-9. **Demo y documentación**
-   - Script de demo 90s (pasos CLI, prompts, expected).
-   - README con setup, `.env`, seeds, troubleshooting.
-   - Roadmap ANN, versionado corpus.
+## Flujo de conversación
 
-## 5. Configuraciones refinadas
+1. El frontend envía el historial + passcode (opcional) vía SSE.
+2. El backend recupera chunks pgvector (k=6) con métricas (`embeddingMs`, `sqlMs`, `k`, `similarityAvg`, `similarityMin`).
+3. `streamText` orquesta el plan del LLM y las herramientas (máx. `MAX_TOOL_ITERATIONS`).
+4. Eventos SSE emitidos:
+   - `ready`: ID de request.
+   - `context`: citas con `href`, snippet y similitud.
+   - `token`: delta de respuesta.
+   - `tool`: inicio/éxito/error + duración.
+   - `claimcheck`: resultado oración-evidencia.
+   - `metrics`: snapshot final (TTFB, latencias, k, similitudes).
+   - `done`/`error`.
+5. Claim checking final marca oraciones sin evidencia (`no_evidence`).
 
-- **Variables de entorno** (`env.example`):
-  ```env
-  DATABASE_URL=postgres://postgres:postgres@postgres:5432/copiloto
-  SHADOW_DATABASE_URL=postgres://postgres:postgres@postgres-shadow:5432/copiloto_shadow
-  OLLAMA_BASE_URL=http://ollama:11434
-  EMBEDDING_MODEL=nomic-embed-text
-  EMBEDDING_DIM=768
-  OPENROUTER_API_KEY=sk-...
-  OPENROUTER_MODEL=anthropic/claude-3.5-haiku
-  OPENROUTER_FALLBACK_MODEL=openai/gpt-4o-mini
-  DOCS_ROOT=./data
-  MAX_TOOL_ITERATIONS=4
-  CLAIM_SIMILARITY_THRESHOLD=0.78
-  CLAIM_OVERLAP_THRESHOLD=0.65
-  NEXT_PUBLIC_BACKEND_URL=http://localhost:3000
-  PASSCODE_HASH=$2b$10$...
-  RATE_LIMIT_REQUESTS=60
-  RATE_LIMIT_WINDOW=60
-  ```
+## Seguridad y guardrails
 
-- **Docker Compose (resumen)**:
-  ```yaml
-  services:
-    postgres:
-      image: ankane/pgvector:0.5.1
-      environment:
-        POSTGRES_PASSWORD: postgres
-      healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres"], interval: 5s, retries: 5 }
-    pgbouncer:
-      image: edoburu/pgbouncer
-      depends_on: { postgres: { condition: service_healthy } }
-    ollama:
-      image: ollama/ollama:latest
-      volumes: ["ollama-data:/root/.ollama"]
-    web:
-      build: .
-      command: pnpm dev
-      env_file: .env
-      depends_on:
-        postgres: { condition: service_healthy }
-        ollama: { condition: service_started }
-  ```
+- Sanitización del contexto RAG (`security/sanitize.ts`) eliminando instrucciones hostiles.
+- Herramientas bloqueadas hasta validar passcode (vía `verify_passcode`).
+- Validaciones Zod en tools y request inicial.
+- Aborto de streaming si el cliente cierra la conexión.
 
-## 6. Próximos pasos
+## Scripts útiles
 
-- Confirmar aceptación de estructura y plan.
-- Pasar a definición detallada de `schema.prisma` y migraciones SQL.
-- Implementar endpoint `/api/chat` conforme al flujo descrito.
-- Continuar con ingesta RAG y claim-checker.
+| Comando | Descripción |
+| --- | --- |
+| `pnpm --filter server run seed` | Crea usuario demo (`demo@laburen.local` / `123456`). |
+| `pnpm --filter server run ingest` | Ingesta completa de `DOCS_ROOT` con embeddings Ollama. |
+| `pnpm --filter server run ingest:path <ruta>` | Ingesta puntual de carpeta/archivo. |
 
-> Supuestos: Node.js 20, pnpm, entorno Linux, App Router habilitado, Anthropic Haiku disponible vía OpenRouter.
+## Métricas en vivo
+
+El panel del frontend muestra:
+
+- **TTFB**: tiempo hasta el primer token.
+- **Latencia LLM**: duración total del stream.
+- **SQL / Embeddings**: tiempos de búsqueda vs. Ollama.
+- **k / similitudes**: cantidad de chunks + calidad promedio/mínima.
+- **Timeline**: ejecución de herramientas (OK / error / duración).
+
+## Futuras extensiones
+
+- Ajustar parámetros `ivfflat` (lists/probes) cuando crezca el corpus.
+- Versionado de corpus (`Doc.version`) para AB testing sin `TRUNCATE`.
+- Comparativas de modelos vía OpenRouter (`defaultModel()` configurable).
