@@ -145,7 +145,9 @@ export function createToolset(ctx: ToolAuthContext) {
         k: z.number().int().min(1).max(12).optional(),
       }),
       async execute({ query, k }) {
-        const result = await searchDocuments(query, k ?? 6);
+        const result = await searchDocuments(query, k ?? 6, {
+          rerankMode: "lexical",
+        });
         return result;
       },
     }),
