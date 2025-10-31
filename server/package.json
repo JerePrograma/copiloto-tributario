@@ -8,7 +8,9 @@
     "migrate": "prisma migrate dev",
     "ingest": "tsx src/rag/ingest.ts",
     "ingest:path": "tsx scripts/ingest_path.ts",
-    "fetch:manifest": "tsx scripts/fetch_manifest.ts"
+    "fetch:manifest": "tsx scripts/fetch_manifest.ts",
+    "refresh": "tsx scripts/refresh_docs.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.58",
@@ -25,6 +27,7 @@
   "devDependencies": {
     "@types/node": "^20",
     "tsx": "^4.20.6",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^2.1.4"
   }
 }

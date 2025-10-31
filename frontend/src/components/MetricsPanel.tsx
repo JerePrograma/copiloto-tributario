@@ -34,6 +34,7 @@ export default function MetricsPanel({ metrics }: MetricsPanelProps) {
         <MetricRow label="Latencia LLM" value={formatMs(metrics.llmMs)} />
         <MetricRow label="Latencia SQL" value={formatMs(metrics.sqlMs)} />
         <MetricRow label="Latencia embeddings" value={formatMs(metrics.embeddingMs)} />
+        <MetricRow label="Latencia FTS" value={formatMs(metrics.ftsMs)} />
         <MetricRow
           label="k (chunks)"
           value={metrics.k !== undefined ? String(metrics.k) : "—"}
@@ -45,6 +46,30 @@ export default function MetricsPanel({ metrics }: MetricsPanelProps) {
         <MetricRow
           label="Similitud mínima"
           value={formatSimilarity(metrics.similarityMin)}
+        />
+        <MetricRow
+          label="Hybrid avg"
+          value={formatSimilarity(metrics.hybridAvg)}
+        />
+        <MetricRow
+          label="Hybrid min"
+          value={formatSimilarity(metrics.hybridMin)}
+        />
+        <MetricRow
+          label="Reranker"
+          value={metrics.reranked ? "Activado" : "No"}
+        />
+        <MetricRow
+          label="Jurisdicciones restringidas"
+          value={metrics.restrictedCount !== undefined ? String(metrics.restrictedCount) : "—"}
+        />
+        <MetricRow
+          label="Modelo LLM"
+          value={metrics.modelId ?? "—"}
+        />
+        <MetricRow
+          label="Intentos LLM"
+          value={metrics.llmAttempts !== undefined ? String(metrics.llmAttempts) : "—"}
         />
       </div>
     </section>

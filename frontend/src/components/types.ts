@@ -3,9 +3,16 @@ export interface MetricsSnapshot {
   llmMs?: number;
   sqlMs?: number;
   embeddingMs?: number;
+  ftsMs?: number;
   k?: number;
   similarityAvg?: number;
   similarityMin?: number;
+  hybridAvg?: number;
+  hybridMin?: number;
+  reranked?: boolean;
+  restrictedCount?: number;
+  modelId?: string;
+  llmAttempts?: number;
 }
 
 export type TimelineStatus = "pending" | "ok" | "error";
@@ -25,6 +32,10 @@ export interface Citation {
   href: string;
   similarity: number;
   snippet: string;
+  hybridScore?: number;
+  jurisdiccion?: string;
+  tipo?: string;
+  anio?: number;
 }
 
 export interface ClaimCheckEntry {
