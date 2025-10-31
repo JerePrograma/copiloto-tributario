@@ -9,6 +9,7 @@ import {
 import { modelFor, resolveModelSequence } from "../lib/openrouter";
 
 interface StreamParams {
+  system?: string;
   messages: CoreMessage[];
   tools?: Record<string, unknown>;
   // lo dejamos por si arriba alguien lo usa, pero NO se lo pasamos a streamText
@@ -21,36 +22,46 @@ export interface StreamWithFallbackResult {
   attempts: number;
 }
 
+function normalizeContent(content: CoreMessage["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .map((part: any) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object" && typeof part.text === "string") {
+          return part.text;
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return String(content ?? "");
+}
+
 // CoreMessage -> ModelMessage
 function toModelMessages(messages: CoreMessage[]): ModelMessage[] {
-  return messages.map<ModelMessage>((m) => {
-    const content =
-      Array.isArray((m as any).content) && (m as any).content.length > 0
-        ? (m as any).content
-        : [
-            {
-              type: "text" as const,
-              text:
-                typeof m.content === "string"
-                  ? m.content
-                  : String(m.content ?? ""),
-            },
-          ];
+  return messages
+    .filter((m) => m.role !== "system")
+    .map<ModelMessage>((m) => {
+      const base: ModelMessage = {
+        role: m.role as ModelMessage["role"],
+        content: normalizeContent(m.content),
+      };
 
-    const base: ModelMessage = {
-      role: m.role,
-      content,
-    };
+      if ((m as any).providerOptions) {
+        return {
+          ...base,
+          providerOptions: (m as any).providerOptions,
+        } as ModelMessage;
+      }
 
-    if ((m as any).providerOptions) {
-      return {
-        ...base,
-        providerOptions: (m as any).providerOptions,
-      } as ModelMessage;
-    }
-
-    return base;
-  });
+      return base;
+    });
 }
 
 export async function streamWithFallback(
@@ -68,6 +79,7 @@ export async function streamWithFallback(
     try {
       const stream = await streamText({
         model: modelFor(modelId),
+        system: params.system,
         messages: modelMessages,
         tools: toolset,
         // NO maxSteps acá, esta versión no lo admite
