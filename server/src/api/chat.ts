@@ -102,20 +102,16 @@ function detectJurisdiccionesFromText(text: string): string[] | undefined {
 
 // orden correcto de mensajes
 function buildCoreMessages(
-  systemPrompt: string,
   contextText: string | undefined,
   userMessage: string,
   fullHistory: Array<{ role: "system" | "user" | "assistant"; content: string }>
 ): CoreMessage[] {
   const msgs: CoreMessage[] = [];
 
-  // 1) reglas
-  msgs.push(toCoreMessage("system", systemPrompt));
-
-  // 2) user actual
+  // 1) user actual
   msgs.push(toCoreMessage("user", userMessage));
 
-  // 3) contexto RAG como assistant auxiliar
+  // 2) contexto RAG como assistant auxiliar
   if (contextText && contextText.trim().length > 0) {
     msgs.push(
       toCoreMessage(
@@ -125,8 +121,9 @@ function buildCoreMessages(
     );
   }
 
-  // 4) resto del historial (menos el user actual que ya agregamos)
+  // 3) resto del historial (menos el user actual que ya agregamos)
   for (const m of fullHistory) {
+    if (m.role === "system") continue;
     if (m.role === "user" && m.content === userMessage) continue;
     msgs.push(toCoreMessage(m.role, m.content));
   }
@@ -270,7 +267,6 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
     // mensajes → core
     const systemPrompt = buildSystemPrompt(authenticated);
     const coreMessages = buildCoreMessages(
-      systemPrompt,
       contextPayload,
       lastUserMessage.content,
       parsed.messages
@@ -278,6 +274,7 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
 
     // streaming LLM
     const { stream, modelId, attempts } = await streamWithFallback({
+      system: systemPrompt,
       messages: coreMessages,
       tools: toolset,
       maxSteps: env.MAX_TOOL_ITERATIONS,
