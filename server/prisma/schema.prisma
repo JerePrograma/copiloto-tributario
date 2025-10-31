@@ -78,8 +78,13 @@ model Doc {
   id        String     @id @default(cuid())
   path      String
   title     String
+  jurisdiccion String?
+  tipo      String?
+  anio      Int?
+  metadata  Json?
   version   Int        @default(1)
   createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
   chunks    DocChunk[]
 
   @@unique([path, version])
@@ -99,4 +104,27 @@ model DocChunk {
   doc Doc @relation(fields: [docId], references: [id], onDelete: Cascade)
 
   @@index([docId, idx])
+}
+
+model PromptAudit {
+  id             String   @id @default(cuid())
+  createdAt      DateTime @default(now())
+  requestId      String
+  userId         String?
+  passcodeValid  Boolean  @default(false)
+  question       String
+  response       String
+  citations      Json
+  metrics        Json?
+  jurisdiction   String?
+}
+
+model SearchAudit {
+  id            String   @id @default(cuid())
+  createdAt     DateTime @default(now())
+  userId        String?
+  passcodeValid Boolean  @default(false)
+  query         String
+  filters       Json?
+  metrics       Json?
 }

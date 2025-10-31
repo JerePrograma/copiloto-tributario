@@ -1,6 +1,7 @@
 import http from "node:http";
 import { parse } from "node:url";
 import { chat } from "./chat";
+import { search } from "./search";
 import { env } from "../lib/env";
 
 const argv = process.argv.slice(2);
@@ -28,6 +29,11 @@ const server = http.createServer((req, res) => {
 
   if (pathname === "/api/chat" && req.method === "POST") {
     void chat(req, res);
+    return;
+  }
+
+  if (pathname === "/api/search" && req.method === "POST") {
+    void search(req, res);
     return;
   }
 
