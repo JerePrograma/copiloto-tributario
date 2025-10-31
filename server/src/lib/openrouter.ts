@@ -10,10 +10,10 @@ export const openrouter = createOpenAI({
   },
 });
 
-export const defaultModel = () => openrouter(env.OPENROUTER_MODEL);
+export const defaultModel = () => openrouter.chat(env.OPENROUTER_MODEL);
 
 export function modelFor(modelId: string) {
-  return openrouter(modelId);
+  return openrouter.chat(modelId);
 }
 
 export function resolveModelSequence(): string[] {
