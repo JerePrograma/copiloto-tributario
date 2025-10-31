@@ -8,6 +8,7 @@ const envSchema = z.object({
   EMBEDDING_DIM: z.coerce.number().int().positive(),
   OPENROUTER_API_KEY: z.string().min(10),
   OPENROUTER_MODEL: z.string().min(3),
+  OPENROUTER_FALLBACK_MODELS: z.string().optional(),
   DOCS_ROOT: z.string().min(1),
   MAX_TOOL_ITERATIONS: z.coerce.number().int().min(1).max(8).default(4),
   PORT: z.coerce.number().int().positive().optional(),

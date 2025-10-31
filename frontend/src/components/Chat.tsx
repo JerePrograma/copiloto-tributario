@@ -12,6 +12,8 @@ import type {
 interface ChatProps {
   onMetrics: (metrics: MetricsSnapshot) => void;
   onTimeline: (updater: (prev: TimelineEvent[]) => TimelineEvent[]) => void;
+  onCitations: (citations: Citation[]) => void;
+  onClaims: (claims: ClaimCheckEntry[]) => void;
 }
 
 interface ChatMessage {
@@ -48,7 +50,7 @@ interface ClaimEventPayload {
 
 const API_BASE = (process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001").replace(/\/$/, "");
 
-export default function Chat({ onMetrics, onTimeline }: ChatProps) {
+export default function Chat({ onMetrics, onTimeline, onCitations, onClaims }: ChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [passcode, setPasscode] = useState("");
@@ -109,6 +111,7 @@ export default function Chat({ onMetrics, onTimeline }: ChatProps) {
         }
         case "context": {
           const { citations } = event.data as ContextEventPayload;
+          onCitations(citations);
           updateMessage(currentId, (msg) => ({
             ...msg,
             citations,
@@ -117,6 +120,7 @@ export default function Chat({ onMetrics, onTimeline }: ChatProps) {
         }
         case "claimcheck": {
           const { claims } = event.data as ClaimEventPayload;
+          onClaims(claims);
           updateMessage(currentId, (msg) => ({
             ...msg,
             claims,
@@ -171,7 +175,7 @@ export default function Chat({ onMetrics, onTimeline }: ChatProps) {
           break;
       }
     },
-    [appendMessage, onMetrics, pushTimeline, updateMessage]
+    [appendMessage, onClaims, onCitations, onMetrics, pushTimeline, updateMessage]
   );
 
   const resetTimeline = useCallback(() => {
@@ -190,6 +194,8 @@ export default function Chat({ onMetrics, onTimeline }: ChatProps) {
       appendMessage(userMessage);
       setInput("");
       resetTimeline();
+      onCitations([]);
+      onClaims([]);
 
       const payload = {
         passcode: passcode || undefined,
@@ -222,7 +228,18 @@ export default function Chat({ onMetrics, onTimeline }: ChatProps) {
       });
       controllerRef.current = controller;
     },
-    [appendMessage, chatEndpoint, handleSSEEvent, input, isStreaming, messages, passcode, resetTimeline]
+    [
+      appendMessage,
+      chatEndpoint,
+      handleSSEEvent,
+      input,
+      isStreaming,
+      messages,
+      onCitations,
+      onClaims,
+      passcode,
+      resetTimeline,
+    ]
   );
 
   const stopStreaming = useCallback(() => {

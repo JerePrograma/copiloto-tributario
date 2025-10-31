@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { streamText } from "ai";
 import { z } from "zod";
 import { env } from "../lib/env";
-import { defaultModel } from "../lib/openrouter";
 import { prisma } from "../lib/prisma";
 import { createToolset } from "../tools";
 import { searchDocuments } from "../rag/search";
 import { claimCheck } from "../claimcheck/claim_checker";
 import { createTelemetry } from "../metrics/telemetry";
+import { streamWithFallback } from "../llm/retry";
+import { recordPromptAudit } from "../metrics/audit";
 
 const requestSchema = z.object({
   passcode: z.string().min(4).optional(),
@@ -36,6 +36,10 @@ function formatCitations(result: Awaited<ReturnType<typeof searchDocuments>>) {
     title: chunk.title,
     href: chunk.href,
     similarity: chunk.similarity,
+    hybridScore: chunk.hybridScore,
+    jurisdiccion: chunk.jurisdiccion ?? undefined,
+    tipo: chunk.tipo ?? undefined,
+    anio: chunk.anio ?? undefined,
     snippet:
       chunk.content.length > 280
         ? `${chunk.content.slice(0, 280)}…`
@@ -145,30 +149,42 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
       }
     }
 
-    const searchResult = await searchDocuments(lastUserMessage.content, 6);
+    const searchResult = await searchDocuments(lastUserMessage.content, 8, {
+      authenticated,
+      rerankMode: "mmr",
+      rerankLimit: 6,
+    });
     telemetry.setSearchMetrics({
       sqlMs: searchResult.metrics.sqlMs,
       embeddingMs: searchResult.metrics.embeddingMs,
       k: searchResult.metrics.k,
       similarityAvg: searchResult.metrics.similarityAvg,
       similarityMin: searchResult.metrics.similarityMin,
+      ftsMs: searchResult.metrics.ftsMs,
+      hybridAvg: searchResult.metrics.hybridAvg,
+      hybridMin: searchResult.metrics.hybridMin,
+      reranked: searchResult.metrics.reranked,
+      restrictedCount: searchResult.metrics.restrictedCount,
     });
+    const citations = formatCitations(searchResult);
     const contextPayload = searchResult.chunks
       .map(
         (chunk, index) =>
           `[[${index + 1}]] ${chunk.title} (${chunk.href})\n${chunk.content}`
       )
       .join("\n\n");
-    sendEvent("context", { citations: formatCitations(searchResult) });
+    sendEvent("context", { citations });
 
     const preparedMessages = enrichMessages(parsed, contextPayload, authenticated);
 
-    const stream = await streamText({
-      model: defaultModel(),
-      messages: preparedMessages,
-      tools: toolset,
-      maxSteps: env.MAX_TOOL_ITERATIONS,
-    });
+    const { stream, modelId, attempts } = await streamWithFallback(
+      {
+        messages: preparedMessages,
+        tools: toolset,
+        maxSteps: env.MAX_TOOL_ITERATIONS,
+      }
+    );
+    telemetry.setLLMInfo({ modelId, attempts });
 
     const toolTimings = new Map<string, number>();
     let responseText = "";
@@ -263,9 +279,21 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
 
     const claims = claimCheck(responseText, searchResult.chunks);
     sendEvent("claimcheck", { claims });
-    sendEvent("metrics", telemetry.snapshot());
+    const snapshot = telemetry.snapshot();
+    sendEvent("metrics", snapshot);
     sendEvent("done", {});
     res.end();
+
+    await recordPromptAudit({
+      requestId,
+      userId: authenticatedUserId,
+      passcodeValid: authenticated,
+      question: lastUserMessage.content,
+      response: responseText,
+      citations,
+      metrics: snapshot,
+      jurisdiction: citations.find((c) => c.jurisdiccion)?.jurisdiccion,
+    });
   } catch (error) {
     console.error("chat error", error);
     const message = error instanceof z.ZodError ? error.message : (error as Error).message;
