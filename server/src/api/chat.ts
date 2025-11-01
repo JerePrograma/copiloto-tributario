@@ -364,12 +364,62 @@ async function retrieveWithAnchors(
   return result;
 }
 
+function buildQuerySuggestion(
+  question: string,
+  citations: { title: string }[]
+): string | undefined {
+  const normalizedQuestion = question.replace(/\s+/g, " ").trim();
+  if (!normalizedQuestion) return undefined;
+
+  const articleMatch = normalizedQuestion.match(/art[íi]culo\s+\d+[a-z]?/i);
+  const normaMatch = normalizedQuestion.match(
+    /(resoluci[oó]n(?:\s+normativa)?\s+n[ºo]?\s*\d+\/\d{4}|ley\s+n[ºo]?\s*\d+(?:\.\d+)?|decreto\s+n[ºo]?\s*\d+\/\d{4})/i
+  );
+  const jurisdictionMatch = normalizedQuestion.match(
+    /(arba|afip|agip|buenos\s+aires|caba|c[oó]rdoba)/i
+  );
+  const mainCitationTitle = citations[0]?.title?.replace(/\s+/g, " ").trim();
+
+  const parts = [
+    articleMatch?.[0],
+    normaMatch?.[0],
+    mainCitationTitle ? `"${mainCitationTitle}"` : undefined,
+    jurisdictionMatch?.[0]?.toUpperCase(),
+  ].filter(Boolean) as string[];
+
+  if (!parts.length) {
+    const fallbackTokens = normalizedQuestion
+      .split(/[\s,.;:()]+/)
+      .filter((token) => token.length > 3 || /\d/.test(token))
+      .slice(0, 6);
+    if (!fallbackTokens.length) return undefined;
+    parts.push(...fallbackTokens);
+  }
+
+  return `Intenta ingresar algo como '${parts.join(" ")}'.`;
+}
+
+function fallbackByIntent(
+  intent: Intent,
+  citations: { title: string }[],
+  question: string
+) {
 function fallbackByIntent(intent: Intent, citations: { title: string }[]) {
   const citeList = citations.map((c, i) => `[[${i + 1}]] ${c.title}`);
   const citeLine =
     citeList.length > 0
       ? `No encontré una respuesta directa, pero estas fuentes podrían ayudar: ${citeList.join(", ")}.\n`
       : "No encontré una respuesta directa ni fragmentos citables para esta consulta.\n";
+  const suggestionLine = buildQuerySuggestion(question, citations);
+  const suggestion = suggestionLine ? `${suggestionLine}\n` : "";
+
+  if (intent === "base_alicuota") {
+    return `${citeLine}${suggestion}Te sugiero revisar capítulos de “Determinación / Base imponible / Valuación fiscal” y “Alícuotas” en la normativa específica, o ampliar el corpus disponible.`;
+  }
+  if (intent === "exenciones") {
+    return `${citeLine}${suggestion}Te sugiero acotar la búsqueda al capítulo de “Exenciones” de la norma y, si corresponde, revisar resoluciones o decretos complementarios.`;
+  }
+  return `${citeLine}${suggestion}Intenta refinar los términos de búsqueda, aportar más contexto sobre el tributo o la jurisdicción, o ampliar el corpus consultado.`;
 
   if (intent === "base_alicuota") {
     return `${citeLine}Te sugiero revisar capítulos de “Determinación / Base imponible / Valuación fiscal” y “Alícuotas” en la normativa específica, o ampliar el corpus disponible.`;
@@ -656,7 +706,7 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
     const hasEvidenced = claims.some((c) => c.supported === true);
 
     if (!hasEvidenced) {
-      const fb = fallbackByIntent(intent, citations);
+      const fb = fallbackByIntent(intent, citations, lastUserMessage.content);
       if (!responseText.trim()) {
         // si el modelo no respondió, emitimos fallback como texto
         send("token", { text: `\n${fb}` });
