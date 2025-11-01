@@ -365,25 +365,19 @@ async function retrieveWithAnchors(
 }
 
 function fallbackByIntent(intent: Intent, citations: { title: string }[]) {
-  const hasCites = citations.length
-    ? citations.map((c, i) => `[[${i + 1}]] ${c.title}`).join("; ")
-    : "(ninguna aplicable)";
+  const citeList = citations.map((c, i) => `[[${i + 1}]] ${c.title}`);
+  const citeLine =
+    citeList.length > 0
+      ? `No encontré una respuesta directa, pero estas fuentes podrían ayudar: ${citeList.join(", ")}.\n`
+      : "No encontré una respuesta directa ni fragmentos citables para esta consulta.\n";
+
   if (intent === "base_alicuota") {
-    return `1) Respuesta directa: sin evidencia suficiente para identificar base imponible y/o alícuota vigentes en las fuentes recuperadas.
-2) Lo que NO se puede afirmar: no se localizaron artículos claros sobre “base imponible”, “valuación fiscal” o “alícuota/tasa” aplicables al caso.
-3) Citas [[n]]: ${hasCites}
-4) Siguiente paso: buscar capítulos “Determinación / Base imponible / Valuación fiscal” y “Alícuotas” de la norma específica, y ampliar corpus si falta.`;
+    return `${citeLine}Te sugiero revisar capítulos de “Determinación / Base imponible / Valuación fiscal” y “Alícuotas” en la normativa específica, o ampliar el corpus disponible.`;
   }
   if (intent === "exenciones") {
-    return `1) Respuesta directa: sin evidencia suficiente para listar exenciones aplicables con soporte textual en las fuentes recuperadas.
-2) Lo que NO se puede afirmar: no se hallaron exenciones explícitas aplicables en los fragmentos recuperados.
-3) Citas [[n]]: ${hasCites}
-4) Siguiente paso: acotar por capítulo “Exenciones” de la norma y revisar actos complementarios (resoluciones/decretos) si corresponden.`;
+    return `${citeLine}Te sugiero acotar la búsqueda al capítulo de “Exenciones” de la norma y, si corresponde, revisar resoluciones o decretos complementarios.`;
   }
-  return `1) Respuesta directa: sin evidencia suficiente en las fuentes recuperadas.
-2) Lo que NO se puede afirmar: no hay texto aplicable a la consulta.
-3) Citas [[n]]: ${hasCites}
-4) Siguiente paso: refinar términos, aportar más detalle del tributo/jurisdicción y/o ampliar corpus.`;
+  return `${citeLine}Intenta refinar los términos de búsqueda, aportar más contexto sobre el tributo o la jurisdicción, o ampliar el corpus consultado.`;
 }
 
 // ---------- endpoint
@@ -666,6 +660,7 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
       if (!responseText.trim()) {
         // si el modelo no respondió, emitimos fallback como texto
         send("token", { text: `\n${fb}` });
+        emittedAnyToken = true;
       }
       responseText = fb;
       send("amendment", { reason: "no_evidence_fallback", intent });
