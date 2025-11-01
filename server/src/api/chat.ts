@@ -113,6 +113,12 @@ function buildAnchorGroupsByIntent(
     if (jur?.includes("AR-CBA")) groups.push(LEX.cba);
   };
 
+  const addJurisdictionGroups = () => {
+    if (jur?.includes("AR-BA")) groups.push(LEX.pba);
+    if (jur?.includes("AR-CABA")) groups.push(LEX.caba);
+    if (jur?.includes("AR-CBA")) groups.push(LEX.cba);
+  };
+
   const computeFocusedMinHits = () =>
     Math.min(2 + Math.min(1, topics.length), 3);
 
