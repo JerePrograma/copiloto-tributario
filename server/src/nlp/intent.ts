@@ -26,6 +26,10 @@ export const LEX = {
     "tramite",
     "trámite",
     "adherir",
+    "adhiero",
+    "adherimos",
+    "anotarme",
+    "registrarme",
   ],
   exencion: [
     "exención",
@@ -95,9 +99,12 @@ export function detectJurisdiccion(t: string): string[] | undefined {
 
 export function detectIntent(t: string): Intent {
   const s = norm(t);
+  const adhesionMatched =
+    LEX.adhesion.some((w) => s.includes(w)) || /adhier|adher/.test(s);
+  const iibbMatched = LEX.iibb.some((w) => s.includes(w));
   if (
-    LEX.adhesion.some((w) => s.includes(w)) &&
-    LEX.iibb.some((w) => s.includes(w))
+    adhesionMatched &&
+    iibbMatched
   )
     return "adhesion_rs";
   if (LEX.exencion.some((w) => s.includes(w)) && /automotor|patente/.test(s))
