@@ -78,6 +78,8 @@ export const LEX = {
   ],
 };
 
+const BASE_ALIQ = [...LEX.base, ...LEX.alicuota];
+
 export function detectJurisdiccion(t: string): string[] | undefined {
   const s = norm(t);
   const out = new Set<string>();
@@ -98,7 +100,7 @@ export function detectIntent(t: string): Intent {
     return "adhesion_rs";
   if (LEX.exencion.some((w) => s.includes(w)) && /automotor|patente/.test(s))
     return "exenciones";
-  if (LEX.baseAliq.some((w) => s.includes(w))) return "base_aliquota";
+  if (BASE_ALIQ.some((w) => s.includes(w))) return "base_aliquota";
   if (/boleta|vencim|detalle|concepto/.test(s)) return "explicar_boleta";
   return "generic";
 }
@@ -107,7 +109,7 @@ export function buildAnchorGroups(
   intent: Intent,
   t: string,
   jur?: string[]
-): string[][] {
+): { groups: string[][]; minHits: number } {
   const s = norm(t);
   const groups: string[][] = [];
   if (intent === "adhesion_rs") {
@@ -118,11 +120,20 @@ export function buildAnchorGroups(
     if (LEX.pyme.some((w) => s.includes(w))) groups.push(LEX.pyme);
   }
   if (intent === "base_aliquota") {
-    groups.push(LEX.baseAliq);
+    groups.push(BASE_ALIQ);
   }
   // opcional: sumar automotor/iibb si aparecen
   if (LEX.automotor.some((w) => s.includes(w))) groups.push(LEX.automotor);
   if (LEX.iibb.some((w) => s.includes(w))) groups.push(LEX.iibb);
   // NO metas hardcode de PBA acá; usalo en el filtro pathLike del search.
-  return groups;
+  const uniqueGroups = groups.length;
+  let minHits = uniqueGroups === 0 ? 0 : uniqueGroups === 1 ? 1 : 2;
+  if (intent === "exenciones" || intent === "base_aliquota") {
+    const bonus = uniqueGroups > 2 ? 1 : 0;
+    minHits = Math.min(minHits + bonus, Math.max(uniqueGroups, 1));
+  }
+  if (intent === "adhesion_rs") {
+    minHits = Math.min(2, Math.max(uniqueGroups, 1));
+  }
+  return { groups, minHits };
 }

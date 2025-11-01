@@ -144,38 +144,34 @@ function buildAnchorGroupsByIntent(
   const groups: AnchorGroups = [];
   const topics = buildTopicGroupsFromQuestion(q); // 0..n
 
+  const addJurisdictionGroups = () => {
+    if (jur?.includes("AR-BA")) groups.push(LEX.pba);
+    if (jur?.includes("AR-CABA")) groups.push(LEX.caba);
+    if (jur?.includes("AR-CBA")) groups.push(LEX.cba);
+  };
+
+  const computeFocusedMinHits = () =>
+    Math.min(2 + Math.min(1, topics.length), 3);
+
+  let minHits = 1;
+
   if (intent === "base_alicuota") {
     groups.push([...LEX.base, ...LEX.alicuota]);
     if (topics.length) groups.push(...topics);
-    if (jur?.includes("AR-BA")) groups.push(LEX.pba);
-    if (jur?.includes("AR-CABA")) groups.push(LEX.caba);
-    if (jur?.includes("AR-CBA")) groups.push(LEX.cba);
-    return {
-      intent,
-      groups,
-      minHits: Math.min(2 + Math.min(1, topics.length), 3),
-    };
-  }
-
-  if (intent === "exenciones") {
+    addJurisdictionGroups();
+    minHits = computeFocusedMinHits();
+  } else if (intent === "exenciones") {
     groups.push(LEX.exencion);
     if (topics.length) groups.push(...topics);
-    if (jur?.includes("AR-BA")) groups.push(LEX.pba);
-    if (jur?.includes("AR-CABA")) groups.push(LEX.caba);
-    if (jur?.includes("AR-CBA")) groups.push(LEX.cba);
-    return {
-      intent,
-      groups,
-      minHits: Math.min(2 + Math.min(1, topics.length), 3),
-    };
+    addJurisdictionGroups();
+    minHits = computeFocusedMinHits();
+  } else {
+    // generico → solo topics + jurisdicción si existieran
+    if (topics.length) groups.push(...topics);
+    addJurisdictionGroups();
+    minHits = groups.length > 0 ? 1 : 1;
   }
-
-  // generico → solo topics + jurisdicción si existieran
-  if (topics.length) groups.push(...topics);
-  if (jur?.includes("AR-BA")) groups.push(LEX.pba);
-  if (jur?.includes("AR-CABA")) groups.push(LEX.caba);
-  if (jur?.includes("AR-CBA")) groups.push(LEX.cba);
-  return { intent, groups, minHits: Math.max(1, groups.length ? 1 : 0) };
+  return { intent, groups, minHits };
 }
 
 function hasCooccurrence(
@@ -195,7 +191,11 @@ function filterByCooccurrence<T extends { content: string }>(
   minGroupsHit = 2
 ): T[] {
   if (groups.length === 0) return chunks; // sin grupos, no filtramos
-  return chunks.filter((c) => hasCooccurrence(c.content, groups, minGroupsHit));
+  const effectiveMin =
+    groups.length === 1 ? 1 : Math.max(1, Math.min(minGroupsHit, groups.length));
+  return chunks.filter((c) =>
+    hasCooccurrence(c.content, groups, effectiveMin)
+  );
 }
 
 function rewriteQueryStrict(groups: AnchorGroups): string {
@@ -339,9 +339,22 @@ async function retrieveWithAnchors(
     phase: "relaxed",
   });
   filtered = filterByCooccurrence(result.chunks, relaxedGroups, 1);
-  result.chunks = filtered;
-  result.metrics.phase = "relaxed";
-  result.metrics.relaxed = true;
+  if (filtered.length > 0) {
+    result.chunks = filtered;
+    (result.metrics as any).phase = "relaxed";
+    (result.metrics as any).relaxed = true;
+    return result;
+  }
+
+  // Fase 4: fallback vectorial sin restricciones
+  result = await searchDocuments(userQuery, Math.max(k, 12), {
+    ...baseOpts,
+    rerankMode: "mmr",
+    perDoc: Math.min(5, Math.max(3, Math.floor(k / 2))),
+    minSim: 0.2,
+  });
+  (result.metrics as any).phase = "vector-fallback";
+  (result.metrics as any).vectorFallback = true;
   return result;
 }
 
