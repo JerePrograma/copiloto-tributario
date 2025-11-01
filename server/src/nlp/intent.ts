@@ -1,82 +1,12 @@
 // server/src/nlp/intent.ts
+import { LEX, norm } from "./lexicon";
+
 export type Intent =
   | "adhesion_rs"
   | "exenciones"
   | "base_aliquota"
   | "explicar_boleta"
   | "generic";
-
-export function norm(s: string) {
-  return s
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-}
-
-export const LEX = {
-  adhesion: [
-    "adhesion",
-    "adhesión",
-    "inscripcion",
-    "inscripción",
-    "alta",
-    "empadronamiento",
-    "tramite",
-    "trámite",
-    "adherir",
-  ],
-  exencion: [
-    "exención",
-    "exencion",
-    "exento",
-    "exentos",
-    "exímase",
-    "eximase",
-    "exceptúase",
-    "exceptuase",
-    "no alcanzad",
-  ],
-  automotor: [
-    "automotor",
-    "automotores",
-    "rodado",
-    "rodados",
-    "vehiculo",
-    "vehículos",
-    "patente",
-    "impuesto a los automotores",
-  ],
-  iibb: [
-    "ingresos brutos",
-    "iibb",
-    "régimen simplificado",
-    "regimen simplificado",
-    "rs",
-  ],
-  base: [
-    "base imponible",
-    "base de cálculo",
-    "valuación fiscal",
-    "valuacion fiscal",
-    "valúo",
-    "valuo",
-    "valor imponible",
-    "determinación",
-    "determinacion",
-  ],
-  alicuota: ["alícuota", "alicuota", "tasa", "porcentaje"],
-  pba: ["provincia de buenos aires", "pba", "arba", "buenos aires"],
-  pyme: [
-    "pyme",
-    "pymes",
-    "mipyme",
-    "micro",
-    "pequena",
-    "pequeña",
-    "mediana",
-    "sme",
-  ],
-};
 
 export function detectJurisdiccion(t: string): string[] | undefined {
   const s = norm(t);
@@ -123,6 +53,8 @@ export function buildAnchorGroups(
   // opcional: sumar automotor/iibb si aparecen
   if (LEX.automotor.some((w) => s.includes(w))) groups.push(LEX.automotor);
   if (LEX.iibb.some((w) => s.includes(w))) groups.push(LEX.iibb);
+  if (LEX.adhesion.some((w) => s.includes(w))) groups.push(LEX.adhesion);
+  if (LEX.pyme.some((w) => s.includes(w))) groups.push(LEX.pyme);
   // NO metas hardcode de PBA acá; usalo en el filtro pathLike del search.
   return groups;
 }
