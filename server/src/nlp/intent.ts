@@ -1,4 +1,6 @@
 // server/src/nlp/intent.ts
+import { LEX, norm } from "./lexicon";
+
 export type Intent =
   | "adhesion_rs"
   | "exenciones"
@@ -125,6 +127,8 @@ export function buildAnchorGroups(
   // opcional: sumar automotor/iibb si aparecen
   if (LEX.automotor.some((w) => s.includes(w))) groups.push(LEX.automotor);
   if (LEX.iibb.some((w) => s.includes(w))) groups.push(LEX.iibb);
+  if (LEX.adhesion.some((w) => s.includes(w))) groups.push(LEX.adhesion);
+  if (LEX.pyme.some((w) => s.includes(w))) groups.push(LEX.pyme);
   // NO metas hardcode de PBA acá; usalo en el filtro pathLike del search.
   const uniqueGroups = groups.length;
   let minHits = uniqueGroups === 0 ? 0 : uniqueGroups === 1 ? 1 : 2;

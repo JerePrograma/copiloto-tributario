@@ -4,56 +4,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { searchDocuments } from "../rag/search";
 import { recordSearchAudit } from "../metrics/audit";
-
-// Normalización y sinónimos iguales a /api/chat
-function stripAccents(s: string): string {
-  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-}
-function norm(s: string): string {
-  return stripAccents(s).toLowerCase();
-}
-const LEX = {
-  exencion: [
-    "exención",
-    "exencion",
-    "exento",
-    "exentos",
-    "exímase",
-    "eximase",
-    "exceptúase",
-    "exceptuase",
-    "no alcanzad",
-  ],
-  automotor: [
-    "automotor",
-    "automotores",
-    "rodado",
-    "rodados",
-    "vehiculo",
-    "vehículos",
-    "vehiculo/s",
-    "patente",
-    "impuesto a los automotores",
-  ],
-  pyme: [
-    "pyme",
-    "pymes",
-    "mipyme",
-    "mi pyme",
-    "micro",
-    "pequena",
-    "pequeña",
-    "mediana",
-    "sme",
-  ],
-  pba: ["provincia de buenos aires", "pba", "arba", "buenos aires"],
-  iibb: [
-    "ingresos brutos",
-    "iibb",
-    "regimen simplificado",
-    "régimen simplificado",
-  ],
-};
+import { LEX, norm } from "../nlp/lexicon";
 type AnchorGroups = string[][];
 
 function buildAnchorGroupsFromQuery(
@@ -62,12 +13,14 @@ function buildAnchorGroupsFromQuery(
 ): { groups: AnchorGroups; minHits: number } {
   const nq = norm(q);
   const groups: AnchorGroups = [];
-  // heurística: si menciona automotores/patente → usar automotor+exención, y si menciona PyME → agregar pyme
-  if (/(automotor|patente|rodado|vehicul)/.test(nq)) groups.push(LEX.automotor);
-  if (/(exenci|exento|eximase|exceptuase|no alcanzad)/.test(nq))
-    groups.push(LEX.exencion);
-  if (/(pyme|mipyme|micro|pequen|mediana|sme)/.test(nq)) groups.push(LEX.pyme);
-  if (/(ingresos brutos|iibb|simplificado)/.test(nq)) groups.push(LEX.iibb);
+  const matches = (group: string[]) =>
+    group.some((w) => nq.includes(norm(w)));
+  // heurística: si menciona automotores/patente → usar automotor+exención, y si menciona PyME/adhesión → agregar pyme/adhesion
+  if (matches(LEX.automotor)) groups.push(LEX.automotor);
+  if (matches(LEX.exencion)) groups.push(LEX.exencion);
+  if (matches(LEX.pyme)) groups.push(LEX.pyme);
+  if (matches(LEX.adhesion)) groups.push(LEX.adhesion);
+  if (matches(LEX.iibb)) groups.push(LEX.iibb);
   if (jurisdictionHint === "AR-BA" || /(buenos aires|pba|arba)/.test(nq))
     groups.push(LEX.pba);
 
@@ -99,6 +52,10 @@ function filterByCooccurrence<T extends { content: string }>(
     hasCooccurrence(c.content, groups, effectiveMin)
   );
 }
+
+export const __TESTING = {
+  buildAnchorGroupsFromQuery,
+};
 function rewriteQueryStrict(groups: AnchorGroups): string {
   return groups
     .map((g) => "(" + g.map((w) => `"${w}"`).join(" OR ") + ")")
