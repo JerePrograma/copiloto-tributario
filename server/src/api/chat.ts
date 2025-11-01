@@ -336,9 +336,22 @@ async function retrieveWithAnchors(
     minSim: 0.25,
   });
   filtered = filterByCooccurrence(result.chunks, relaxedGroups, 1);
-  result.chunks = filtered;
-  (result.metrics as any).phase = "relaxed";
-  (result.metrics as any).relaxed = true;
+  if (filtered.length > 0) {
+    result.chunks = filtered;
+    (result.metrics as any).phase = "relaxed";
+    (result.metrics as any).relaxed = true;
+    return result;
+  }
+
+  // Fase 4: fallback vectorial sin restricciones
+  result = await searchDocuments(userQuery, Math.max(k, 12), {
+    ...baseOpts,
+    rerankMode: "mmr",
+    perDoc: Math.min(5, Math.max(3, Math.floor(k / 2))),
+    minSim: 0.2,
+  });
+  (result.metrics as any).phase = "vector-fallback";
+  (result.metrics as any).vectorFallback = true;
   return result;
 }
 
