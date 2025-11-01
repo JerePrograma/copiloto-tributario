@@ -109,7 +109,7 @@ export function buildAnchorGroups(
   intent: Intent,
   t: string,
   jur?: string[]
-): string[][] {
+): { groups: string[][]; minHits: number } {
   const s = norm(t);
   const groups: string[][] = [];
   if (intent === "adhesion_rs") {
@@ -126,5 +126,14 @@ export function buildAnchorGroups(
   if (LEX.automotor.some((w) => s.includes(w))) groups.push(LEX.automotor);
   if (LEX.iibb.some((w) => s.includes(w))) groups.push(LEX.iibb);
   // NO metas hardcode de PBA acá; usalo en el filtro pathLike del search.
-  return groups;
+  const uniqueGroups = groups.length;
+  let minHits = uniqueGroups === 0 ? 0 : uniqueGroups === 1 ? 1 : 2;
+  if (intent === "exenciones" || intent === "base_aliquota") {
+    const bonus = uniqueGroups > 2 ? 1 : 0;
+    minHits = Math.min(minHits + bonus, Math.max(uniqueGroups, 1));
+  }
+  if (intent === "adhesion_rs") {
+    minHits = Math.min(2, Math.max(uniqueGroups, 1));
+  }
+  return { groups, minHits };
 }
