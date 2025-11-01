@@ -11,7 +11,7 @@ import { createTelemetry } from "../metrics/telemetry";
 import { streamWithFallback } from "../llm/retry";
 import { recordPromptAudit } from "../metrics/audit";
 import type { CoreMessage } from "ai";
-import { detectIntent as detectIntentNLP, detectJurisdiccion, buildAnchorGroups } from "../nlp/intent";
+import { LEX, norm } from "../nlp/lexicon";
 
 // ---------- schema
 const requestSchema = z.object({
@@ -32,70 +32,12 @@ function sseSend(res: ServerResponse, event: string, data: unknown): void {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-// ---------- text utils
-function stripAccents(s: string): string {
-  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-}
-function norm(s: string): string {
-  return stripAccents(s).toLowerCase();
-}
-
-// ---------- lexicon (sin hardcodear un caso; cubrir sinónimos comunes)
-const LEX = {
-  exencion: [
-    "exención",
-    "exencion",
-    "exento",
-    "exentos",
-    "exímase",
-    "eximase",
-    "exceptúase",
-    "exceptuase",
-    "no alcanzad",
-  ],
-  base: [
-    "base imponible",
-    "base de cálculo",
-    "base de calculo",
-    "valuación fiscal",
-    "valuacion fiscal",
-    "valúo",
-    "valuo",
-    "valor imponible",
-    "determinación",
-    "determinacion",
-  ],
-  alicuota: ["alícuota", "alicuota", "tasa", "porcentaje"],
-  automotor: [
-    "automotor",
-    "automotores",
-    "rodado",
-    "rodados",
-    "vehiculo",
-    "vehículos",
-    "vehiculo/s",
-    "patente",
-    "impuesto a los automotores",
-  ],
-  iibb: [
-    "ingresos brutos",
-    "iibb",
-    "régimen simplificado",
-    "regimen simplificado",
-    "rs",
-  ],
-  iva: ["iva", "impuesto al valor agregado"],
-  ganancias: ["ganancias", "impuesto a las ganancias"],
-  monotributo: ["monotributo", "régimen simplificado nacional"],
-  boleta: ["boleta", "liquidación", "liquidacion", "comprobante"],
-  pba: ["provincia de buenos aires", "pba", "arba", "buenos aires"],
-  caba: ["caba", "ciudad de buenos aires", "gcba"],
-  cba: ["cordoba", "córdoba", "dgr cordoba", "rentas cordoba"],
-  nacion: ["nacion", "nacional", "argentina"],
-};
-
 // ---------- intent
-export type Intent = "exenciones" | "base_alicuota" | "generico";
+export type Intent =
+  | "adhesion_rs"
+  | "exenciones"
+  | "base_alicuota"
+  | "generico";
 
 function detectIntent(q: string): Intent {
   const t = norm(q);
@@ -103,6 +45,9 @@ function detectIntent(q: string): Intent {
   const mentionsBase =
     /(base impon|base de c|valuaci|valuo|valor impon|determinaci)/.test(t);
   const mentionsAli = /(al[ií]cuota|tasa|porcentaje)/.test(t);
+  const mentionsAdhesion = LEX.adhesion.some((w) => t.includes(norm(w)));
+  const mentionsSimplificado = LEX.iibb.some((w) => t.includes(norm(w)));
+  if (mentionsAdhesion && mentionsSimplificado) return "adhesion_rs";
   if (mentionsBase || mentionsAli) return "base_alicuota";
   if (mentionsEx) return "exenciones";
   return "generico";
@@ -132,6 +77,7 @@ function buildTopicGroupsFromQuestion(q: string): string[][] {
     topics.push(LEX.ganancias);
   if (LEX.monotributo.some((w) => t.includes(norm(w))))
     topics.push(LEX.monotributo);
+  if (LEX.pyme.some((w) => t.includes(norm(w)))) topics.push(LEX.pyme);
   if (topics.length === 0) return [];
   return topics;
 }
@@ -140,9 +86,24 @@ function buildAnchorGroupsByIntent(
   q: string,
   jur?: string[]
 ): { intent: Intent; groups: AnchorGroups; minHits: number } {
+  const t = norm(q);
   const intent = detectIntent(q);
   const groups: AnchorGroups = [];
   const topics = buildTopicGroupsFromQuestion(q); // 0..n
+
+  if (intent === "adhesion_rs") {
+    groups.push(LEX.adhesion, LEX.iibb);
+    if (topics.length) groups.push(...topics);
+    if (jur?.includes("AR-BA")) groups.push(LEX.pba);
+    if (jur?.includes("AR-CABA")) groups.push(LEX.caba);
+    if (jur?.includes("AR-CBA")) groups.push(LEX.cba);
+    if (LEX.pyme.some((w) => t.includes(norm(w)))) groups.push(LEX.pyme);
+    return {
+      intent,
+      groups,
+      minHits: Math.min(2 + Math.min(1, topics.length), 3),
+    };
+  }
 
   if (intent === "base_alicuota") {
     groups.push([...LEX.base, ...LEX.alicuota]);
@@ -150,24 +111,28 @@ function buildAnchorGroupsByIntent(
     if (jur?.includes("AR-BA")) groups.push(LEX.pba);
     if (jur?.includes("AR-CABA")) groups.push(LEX.caba);
     if (jur?.includes("AR-CBA")) groups.push(LEX.cba);
-    return {
-      intent,
-      groups,
-      minHits: Math.min(2 + Math.min(1, topics.length), 3),
-    };
-  }
+  };
 
-  if (intent === "exenciones") {
+  const computeFocusedMinHits = () =>
+    Math.min(2 + Math.min(1, topics.length), 3);
+
+  let minHits = 1;
+
+  if (intent === "base_alicuota") {
+    groups.push([...LEX.base, ...LEX.alicuota]);
+    if (topics.length) groups.push(...topics);
+    addJurisdictionGroups();
+    minHits = computeFocusedMinHits();
+  } else if (intent === "exenciones") {
     groups.push(LEX.exencion);
     if (topics.length) groups.push(...topics);
-    if (jur?.includes("AR-BA")) groups.push(LEX.pba);
-    if (jur?.includes("AR-CABA")) groups.push(LEX.caba);
-    if (jur?.includes("AR-CBA")) groups.push(LEX.cba);
-    return {
-      intent,
-      groups,
-      minHits: Math.min(2 + Math.min(1, topics.length), 3),
-    };
+    addJurisdictionGroups();
+    minHits = computeFocusedMinHits();
+  } else {
+    // generico → solo topics + jurisdicción si existieran
+    if (topics.length) groups.push(...topics);
+    addJurisdictionGroups();
+    minHits = groups.length > 0 ? 1 : 1;
   }
 
   // generico → solo topics + jurisdicción si existieran
@@ -175,6 +140,8 @@ function buildAnchorGroupsByIntent(
   if (jur?.includes("AR-BA")) groups.push(LEX.pba);
   if (jur?.includes("AR-CABA")) groups.push(LEX.caba);
   if (jur?.includes("AR-CBA")) groups.push(LEX.cba);
+  if (LEX.adhesion.some((w) => t.includes(norm(w)))) groups.push(LEX.adhesion);
+  if (LEX.pyme.some((w) => t.includes(norm(w)))) groups.push(LEX.pyme);
   return { intent, groups, minHits: Math.max(1, groups.length ? 1 : 0) };
 }
 
@@ -195,8 +162,16 @@ function filterByCooccurrence<T extends { content: string }>(
   minGroupsHit = 2
 ): T[] {
   if (groups.length === 0) return chunks; // sin grupos, no filtramos
-  return chunks.filter((c) => hasCooccurrence(c.content, groups, minGroupsHit));
+  const effectiveMin =
+    groups.length === 1 ? 1 : Math.max(1, Math.min(minGroupsHit, groups.length));
+  return chunks.filter((c) =>
+    hasCooccurrence(c.content, groups, effectiveMin)
+  );
 }
+
+export const __TESTING = {
+  buildAnchorGroupsByIntent,
+};
 
 function rewriteQueryStrict(groups: AnchorGroups): string {
   if (!groups.length) return "";
@@ -295,11 +270,12 @@ async function retrieveWithAnchors(
     rerankMode: "lexical",
     perDoc: Math.min(5, Math.max(3, Math.floor(k / 2))),
     minSim: 0.3,
+    phase: "lexical-strict",
   });
   let filtered = filterByCooccurrence(result.chunks, groups, minHits);
   if (filtered.length > 0) {
     result.chunks = filtered;
-    (result.metrics as any).phase = "lexical-strict";
+    result.metrics.phase = "lexical-strict";
     return result;
   }
 
@@ -313,6 +289,7 @@ async function retrieveWithAnchors(
       rerankMode: "mmr",
       perDoc: Math.min(5, Math.max(3, Math.floor(k / 2))),
       minSim: 0.28,
+      phase: "mmr-expanded",
     }
   );
   filtered = filterByCooccurrence(
@@ -322,7 +299,7 @@ async function retrieveWithAnchors(
   );
   if (filtered.length > 0) {
     result.chunks = filtered;
-    (result.metrics as any).phase = "mmr-expanded";
+    result.metrics.phase = "mmr-expanded";
     return result;
   }
 
@@ -334,11 +311,25 @@ async function retrieveWithAnchors(
     rerankMode: "lexical",
     perDoc: Math.min(5, Math.max(3, Math.floor(k / 2))),
     minSim: 0.25,
+    phase: "relaxed",
   });
   filtered = filterByCooccurrence(result.chunks, relaxedGroups, 1);
-  result.chunks = filtered;
-  (result.metrics as any).phase = "relaxed";
-  (result.metrics as any).relaxed = true;
+  if (filtered.length > 0) {
+    result.chunks = filtered;
+    (result.metrics as any).phase = "relaxed";
+    (result.metrics as any).relaxed = true;
+    return result;
+  }
+
+  // Fase 4: fallback vectorial sin restricciones
+  result = await searchDocuments(userQuery, Math.max(k, 12), {
+    ...baseOpts,
+    rerankMode: "mmr",
+    perDoc: Math.min(5, Math.max(3, Math.floor(k / 2))),
+    minSim: 0.2,
+  });
+  (result.metrics as any).phase = "vector-fallback";
+  (result.metrics as any).vectorFallback = true;
   return result;
 }
 
@@ -475,7 +466,13 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
     );
 
     // RAG multi-fase
-    const baseOpts = { authenticated, pathLike } as const;
+    const baseOpts = {
+      authenticated,
+      pathLike,
+      phaseWeights: {
+        "mmr-expanded": { vectorWeight: 0.65, textWeight: 0.35 },
+      },
+    };
     const searchResult = await retrieveWithAnchors(
       lastUserMessage.content,
       12,
@@ -490,12 +487,16 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
       k: searchResult.metrics.k,
       similarityAvg: searchResult.metrics.similarityAvg,
       similarityMin: searchResult.metrics.similarityMin,
-      ftsMs: (searchResult.metrics as any).ftsMs ?? undefined,
-      hybridAvg: (searchResult.metrics as any).hybridAvg ?? undefined,
-      hybridMin: (searchResult.metrics as any).hybridMin ?? undefined,
-      reranked: (searchResult.metrics as any).reranked ?? undefined,
-      phase: (searchResult.metrics as any).phase ?? undefined,
-      relaxed: (searchResult.metrics as any).relaxed ?? undefined,
+      ftsMs: searchResult.metrics.ftsMs,
+      hybridAvg: searchResult.metrics.hybridAvg,
+      hybridMin: searchResult.metrics.hybridMin,
+      reranked: searchResult.metrics.reranked,
+      restrictedCount: searchResult.metrics.restrictedCount,
+      vectorWeight: searchResult.metrics.vectorWeight,
+      textWeight: searchResult.metrics.textWeight,
+      weightSource: searchResult.metrics.weightSource,
+      phase: searchResult.metrics.phase,
+      relaxed: searchResult.metrics.relaxed,
     });
 
     const citations = formatCitations(searchResult);

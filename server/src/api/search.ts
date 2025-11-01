@@ -4,77 +4,32 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { searchDocuments } from "../rag/search";
 import { recordSearchAudit } from "../metrics/audit";
-
-// Normalización y sinónimos iguales a /api/chat
-function stripAccents(s: string): string {
-  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-}
-function norm(s: string): string {
-  return stripAccents(s).toLowerCase();
-}
-const LEX = {
-  exencion: [
-    "exención",
-    "exencion",
-    "exento",
-    "exentos",
-    "exímase",
-    "eximase",
-    "exceptúase",
-    "exceptuase",
-    "no alcanzad",
-  ],
-  automotor: [
-    "automotor",
-    "automotores",
-    "rodado",
-    "rodados",
-    "vehiculo",
-    "vehículos",
-    "vehiculo/s",
-    "patente",
-    "impuesto a los automotores",
-  ],
-  pyme: [
-    "pyme",
-    "pymes",
-    "mipyme",
-    "mi pyme",
-    "micro",
-    "pequena",
-    "pequeña",
-    "mediana",
-    "sme",
-  ],
-  pba: ["provincia de buenos aires", "pba", "arba", "buenos aires"],
-  iibb: [
-    "ingresos brutos",
-    "iibb",
-    "regimen simplificado",
-    "régimen simplificado",
-  ],
-};
+import { LEX, norm } from "../nlp/lexicon";
 type AnchorGroups = string[][];
 
 function buildAnchorGroupsFromQuery(
   q: string,
   jurisdictionHint?: string
-): AnchorGroups {
+): { groups: AnchorGroups; minHits: number } {
   const nq = norm(q);
   const groups: AnchorGroups = [];
-  // heurística: si menciona automotores/patente → usar automotor+exención, y si menciona PyME → agregar pyme
-  if (/(automotor|patente|rodado|vehicul)/.test(nq)) groups.push(LEX.automotor);
-  if (/(exenci|exento|eximase|exceptuase|no alcanzad)/.test(nq))
-    groups.push(LEX.exencion);
-  if (/(pyme|mipyme|micro|pequen|mediana|sme)/.test(nq)) groups.push(LEX.pyme);
-  if (/(ingresos brutos|iibb|simplificado)/.test(nq)) groups.push(LEX.iibb);
+  const matches = (group: string[]) =>
+    group.some((w) => nq.includes(norm(w)));
+  // heurística: si menciona automotores/patente → usar automotor+exención, y si menciona PyME/adhesión → agregar pyme/adhesion
+  if (matches(LEX.automotor)) groups.push(LEX.automotor);
+  if (matches(LEX.exencion)) groups.push(LEX.exencion);
+  if (matches(LEX.pyme)) groups.push(LEX.pyme);
+  if (matches(LEX.adhesion)) groups.push(LEX.adhesion);
+  if (matches(LEX.iibb)) groups.push(LEX.iibb);
   if (jurisdictionHint === "AR-BA" || /(buenos aires|pba|arba)/.test(nq))
     groups.push(LEX.pba);
 
   // default razonable si no detectamos nada
   if (groups.length === 0) groups.push(LEX.exencion);
 
-  return groups;
+  const minHits = groups.length > 1 ? 2 : 1;
+
+  return { groups, minHits };
 }
 function hasCooccurrence(
   text: string,
@@ -91,8 +46,16 @@ function filterByCooccurrence<T extends { content: string }>(
   groups: AnchorGroups,
   minGroupsHit = 2
 ): T[] {
-  return chunks.filter((c) => hasCooccurrence(c.content, groups, minGroupsHit));
+  const effectiveMin =
+    groups.length === 1 ? 1 : Math.max(1, Math.min(minGroupsHit, groups.length));
+  return chunks.filter((c) =>
+    hasCooccurrence(c.content, groups, effectiveMin)
+  );
 }
+
+export const __TESTING = {
+  buildAnchorGroupsFromQuery,
+};
 function rewriteQueryStrict(groups: AnchorGroups): string {
   return groups
     .map((g) => "(" + g.map((w) => `"${w}"`).join(" OR ") + ")")
@@ -169,7 +132,7 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
     const pathLike = filters.pathLike ?? autoPathLike;
 
     // Anclas desde la query
-    const groups = buildAnchorGroupsFromQuery(
+    const { groups, minHits } = buildAnchorGroupsFromQuery(
       parsed.query,
       parsed.jurisdictionHint
     );
@@ -182,8 +145,9 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
       rerankMode: "lexical",
       perDoc: parsed.perDoc ?? 4,
       minSim: parsed.minSim ?? 0.35,
+      phase: "lexical-strict",
     });
-    let filtered = filterByCooccurrence(result.chunks, groups, 2);
+    let filtered = filterByCooccurrence(result.chunks, groups, minHits);
 
     let phase = "lexical-strict";
     if (filtered.length === 0) {
@@ -195,8 +159,9 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
         rerankMode: "mmr",
         perDoc: parsed.perDoc ?? 4,
         minSim: parsed.minSim ?? 0.35,
+        phase: "mmr-expanded",
       });
-      filtered = filterByCooccurrence(result.chunks, groups, 2);
+      filtered = filterByCooccurrence(result.chunks, groups, minHits);
       phase = "mmr-expanded";
     }
 
@@ -214,14 +179,15 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
         rerankMode: "lexical",
         perDoc: parsed.perDoc ?? 4,
         minSim: parsed.minSim ?? 0.35,
+        phase: "negative-evidence",
       });
       filtered = filterByCooccurrence(
         result.chunks,
         relaxedGroups,
-        Math.min(2, relaxedGroups.length)
+        Math.min(minHits, relaxedGroups.length || 1)
       );
-      phase = "negative-evidence";
-      (result.metrics as any).relaxed = true;
+        phase = "negative-evidence";
+        result.metrics.relaxed = true;
     }
 
     // Auditoría

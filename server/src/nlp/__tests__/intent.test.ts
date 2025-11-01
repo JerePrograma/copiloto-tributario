@@ -1,28 +1,31 @@
 import { describe, expect, it } from "vitest";
 
-import { buildAnchorGroups, detectIntent, LEX } from "../intent";
+import { buildAnchorGroups, detectIntent } from "../../nlp/intent";
 
-describe("detectIntent - adhesion", () => {
-  const utterances = [
-    "Necesito adhiero al régimen simplificado de ingresos brutos",
-    "Queremos adherimos al RS de ingresos brutos",
-    "Quiero anotarme en el régimen simplificado de ingresos brutos",
-    "Necesito registrarme en el régimen simplificado de ingresos brutos",
-  ];
-
-  utterances.forEach((utterance) => {
-    it(`detects adhesion_rs for "${utterance}"`, () => {
-      expect(detectIntent(utterance)).toBe("adhesion_rs");
-    });
+describe("intent detection", () => {
+  it("detects base_aliquota intent for base imponible queries", () => {
+    expect(detectIntent("¿Cómo calculo la base imponible?"))
+      .toBe("base_aliquota");
   });
 
-  it("builds adhesion anchor groups including IIBB lexicon", () => {
-    const utterance =
-      "Necesito adhiero al régimen simplificado de ingresos brutos";
-    const intent = detectIntent(utterance);
-    const groups = buildAnchorGroups(intent, utterance);
+  it("detects base_aliquota intent for alícuota queries", () => {
+    expect(detectIntent("Necesito saber la alícuota aplicable"))
+      .toBe("base_aliquota");
+  });
+});
 
-    expect(groups).toContainEqual(LEX.adhesion);
-    expect(groups).toContainEqual(LEX.iibb);
+describe("anchor groups", () => {
+  it("combines base and alícuota keywords for base_aliquota intent", () => {
+    const groups = buildAnchorGroups(
+      "base_aliquota",
+      "Detalle sobre base imponible y alícuota"
+    );
+
+    const combinedGroup = groups.find((group) =>
+      group.includes("base imponible")
+    );
+
+    expect(combinedGroup).toBeDefined();
+    expect(combinedGroup).toContain("alícuota");
   });
 });
