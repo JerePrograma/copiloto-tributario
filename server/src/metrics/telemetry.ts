@@ -19,6 +19,11 @@ export interface MetricsSnapshot {
   hybridMin?: number;
   reranked?: boolean;
   restrictedCount?: number;
+  vectorWeight?: number;
+  textWeight?: number;
+  weightSource?: "auto" | "manual" | "phase";
+  phase?: string;
+  relaxed?: boolean;
   modelId?: string;
   llmAttempts?: number;
 }
@@ -38,6 +43,11 @@ interface TelemetryState {
     hybridMin?: number;
     reranked?: boolean;
     restrictedCount?: number;
+    vectorWeight: number;
+    textWeight: number;
+    weightSource: "auto" | "manual" | "phase";
+    phase?: string;
+    relaxed?: boolean;
   };
   llm?: {
     modelId?: string;
@@ -60,6 +70,11 @@ export interface Telemetry {
     hybridMin?: number;
     reranked?: boolean;
     restrictedCount?: number;
+    vectorWeight: number;
+    textWeight: number;
+    weightSource: "auto" | "manual" | "phase";
+    phase?: string;
+    relaxed?: boolean;
   }) => void;
   setLLMInfo: (info: { modelId?: string; attempts?: number }) => void;
   addToolEvent: (event: ToolTimelineEvent) => void;
@@ -112,6 +127,11 @@ export function createTelemetry(): Telemetry {
         snapshot.hybridMin = state.searchMetrics.hybridMin;
         snapshot.reranked = state.searchMetrics.reranked;
         snapshot.restrictedCount = state.searchMetrics.restrictedCount;
+        snapshot.vectorWeight = state.searchMetrics.vectorWeight;
+        snapshot.textWeight = state.searchMetrics.textWeight;
+        snapshot.weightSource = state.searchMetrics.weightSource;
+        snapshot.phase = state.searchMetrics.phase;
+        snapshot.relaxed = state.searchMetrics.relaxed;
       }
       if (state.llm) {
         snapshot.modelId = state.llm.modelId;

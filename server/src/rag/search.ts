@@ -34,6 +34,11 @@ export interface SearchMetrics {
   hybridMin?: number;
   reranked?: boolean;
   restrictedCount?: number;
+  vectorWeight: number;
+  textWeight: number;
+  weightSource: "auto" | "manual" | "phase";
+  phase?: string;
+  relaxed?: boolean;
 }
 
 export interface SearchResult {
@@ -56,6 +61,8 @@ export interface SearchOpts {
   rerankLimit?: number;
   vectorWeight?: number;
   textWeight?: number;
+  phase?: string;
+  phaseWeights?: Record<string, { vectorWeight?: number; textWeight?: number }>;
 }
 
 /** capea resultados por documento (diversidad) */
@@ -89,12 +96,58 @@ export async function searchDocuments(
   const fetchN = K * 4; // traemos de más para poder diversificar
   const tokens = query.trim().split(/\s+/).length;
   const legalist = /(exenci[oó]n|patente|automotores?|pymes?)/i.test(query);
-  const textWeightAuto =
-    opts.textWeight ?? (tokens <= 6 || legalist ? 0.6 : 0.3);
-  const vectorWeightAuto = opts.vectorWeight ?? 1 - textWeightAuto;
+  const multiWord = tokens >= 3;
+  const longQuery = tokens >= 8;
+  const hasPhrase = /"[^"]+"/.test(query);
+  const hasConnectors =
+    /[,;]|\b(de(l)?|para|sobre|seg[uú]n|respecto|contra|sin|con)\b/i.test(query);
 
-  const vectorWeight = Math.max(0, Math.min(vectorWeightAuto, 1));
-  const textWeight = Math.max(0, Math.min(textWeightAuto, 1));
+  let autoTextWeight = 0.52;
+  if (tokens <= 2) autoTextWeight = 0.6;
+  if (legalist) autoTextWeight = Math.max(autoTextWeight, 0.6);
+  if (multiWord) autoTextWeight = Math.min(autoTextWeight, 0.45);
+  if (longQuery) autoTextWeight = Math.min(autoTextWeight, 0.4);
+  if (hasPhrase) autoTextWeight = Math.min(autoTextWeight, 0.35);
+  if (hasConnectors && multiWord)
+    autoTextWeight = Math.min(autoTextWeight, 0.43);
+  const autoVectorWeight = 1 - autoTextWeight;
+
+  const phaseKey = opts.phase ?? "default";
+  const phaseOverrides =
+    opts.phaseWeights?.[phaseKey] ?? opts.phaseWeights?.default;
+  const overrideVector =
+    phaseOverrides?.vectorWeight ?? opts.vectorWeight ?? undefined;
+  const overrideText =
+    phaseOverrides?.textWeight ?? opts.textWeight ?? undefined;
+
+  let weightSource: "auto" | "manual" | "phase" = "auto";
+  if (
+    phaseOverrides &&
+    (phaseOverrides.vectorWeight !== undefined ||
+      phaseOverrides.textWeight !== undefined)
+  ) {
+    weightSource = "phase";
+  } else if (opts.vectorWeight !== undefined || opts.textWeight !== undefined) {
+    weightSource = "manual";
+  }
+
+  let vectorWeight =
+    overrideVector ??
+    (overrideText !== undefined ? 1 - overrideText : autoVectorWeight);
+  let textWeight =
+    overrideText ??
+    (overrideVector !== undefined ? 1 - overrideVector : autoTextWeight);
+
+  vectorWeight = Math.max(0, Math.min(vectorWeight, 1));
+  textWeight = Math.max(0, Math.min(textWeight, 1));
+  const totalWeight = vectorWeight + textWeight;
+  if (totalWeight === 0) {
+    vectorWeight = 0.5;
+    textWeight = 0.5;
+  } else if (Math.abs(totalWeight - 1) > 0.001) {
+    vectorWeight = vectorWeight / totalWeight;
+    textWeight = textWeight / totalWeight;
+  }
   const auth = Boolean(opts.authenticated);
   const restricted = restrictedJurisdictions(auth);
   const sanitizedJurisdictions = sanitizeJurisdictions(opts.jurisdiccion, auth);
@@ -229,6 +282,10 @@ export async function searchDocuments(
       hybridMin,
       reranked: Boolean(opts.rerankMode),
       restrictedCount: restricted.length,
+      vectorWeight,
+      textWeight,
+      weightSource,
+      phase: opts.phase,
     },
   };
 }
