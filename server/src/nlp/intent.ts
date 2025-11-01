@@ -78,6 +78,8 @@ export const LEX = {
   ],
 };
 
+const BASE_ALIQ = [...LEX.base, ...LEX.alicuota];
+
 export function detectJurisdiccion(t: string): string[] | undefined {
   const s = norm(t);
   const out = new Set<string>();
@@ -98,7 +100,7 @@ export function detectIntent(t: string): Intent {
     return "adhesion_rs";
   if (LEX.exencion.some((w) => s.includes(w)) && /automotor|patente/.test(s))
     return "exenciones";
-  if (LEX.baseAliq.some((w) => s.includes(w))) return "base_aliquota";
+  if (BASE_ALIQ.some((w) => s.includes(w))) return "base_aliquota";
   if (/boleta|vencim|detalle|concepto/.test(s)) return "explicar_boleta";
   return "generic";
 }
@@ -118,7 +120,7 @@ export function buildAnchorGroups(
     if (LEX.pyme.some((w) => s.includes(w))) groups.push(LEX.pyme);
   }
   if (intent === "base_aliquota") {
-    groups.push(LEX.baseAliq);
+    groups.push(BASE_ALIQ);
   }
   // opcional: sumar automotor/iibb si aparecen
   if (LEX.automotor.some((w) => s.includes(w))) groups.push(LEX.automotor);
