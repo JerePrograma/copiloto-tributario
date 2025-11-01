@@ -14,6 +14,8 @@ interface StreamParams {
   tools?: Record<string, unknown>;
   // lo dejamos por si arriba alguien lo usa, pero NO se lo pasamos a streamText
   maxSteps?: number;
+  temperature?: number;
+  topP?: number;
 }
 
 export interface StreamWithFallbackResult {
@@ -82,6 +84,8 @@ export async function streamWithFallback(
         system: params.system,
         messages: modelMessages,
         tools: toolset,
+        temperature: params.temperature,
+        topP: params.topP,
         // NO maxSteps acá, esta versión no lo admite
       });
 
