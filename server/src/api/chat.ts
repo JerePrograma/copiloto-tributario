@@ -404,6 +404,7 @@ function fallbackByIntent(
   citations: { title: string }[],
   question: string
 ) {
+function fallbackByIntent(intent: Intent, citations: { title: string }[]) {
   const citeList = citations.map((c, i) => `[[${i + 1}]] ${c.title}`);
   const citeLine =
     citeList.length > 0
@@ -419,6 +420,14 @@ function fallbackByIntent(
     return `${citeLine}${suggestion}Te sugiero acotar la búsqueda al capítulo de “Exenciones” de la norma y, si corresponde, revisar resoluciones o decretos complementarios.`;
   }
   return `${citeLine}${suggestion}Intenta refinar los términos de búsqueda, aportar más contexto sobre el tributo o la jurisdicción, o ampliar el corpus consultado.`;
+
+  if (intent === "base_alicuota") {
+    return `${citeLine}Te sugiero revisar capítulos de “Determinación / Base imponible / Valuación fiscal” y “Alícuotas” en la normativa específica, o ampliar el corpus disponible.`;
+  }
+  if (intent === "exenciones") {
+    return `${citeLine}Te sugiero acotar la búsqueda al capítulo de “Exenciones” de la norma y, si corresponde, revisar resoluciones o decretos complementarios.`;
+  }
+  return `${citeLine}Intenta refinar los términos de búsqueda, aportar más contexto sobre el tributo o la jurisdicción, o ampliar el corpus consultado.`;
 }
 
 // ---------- endpoint
