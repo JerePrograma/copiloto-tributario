@@ -10,7 +10,7 @@ type AnchorGroups = string[][];
 function buildAnchorGroupsFromQuery(
   q: string,
   jurisdictionHint?: string
-): AnchorGroups {
+): { groups: AnchorGroups; minHits: number } {
   const nq = norm(q);
   const groups: AnchorGroups = [];
   const matches = (group: string[]) =>
@@ -27,7 +27,9 @@ function buildAnchorGroupsFromQuery(
   // default razonable si no detectamos nada
   if (groups.length === 0) groups.push(LEX.exencion);
 
-  return groups;
+  const minHits = groups.length > 1 ? 2 : 1;
+
+  return { groups, minHits };
 }
 function hasCooccurrence(
   text: string,
@@ -44,7 +46,11 @@ function filterByCooccurrence<T extends { content: string }>(
   groups: AnchorGroups,
   minGroupsHit = 2
 ): T[] {
-  return chunks.filter((c) => hasCooccurrence(c.content, groups, minGroupsHit));
+  const effectiveMin =
+    groups.length === 1 ? 1 : Math.max(1, Math.min(minGroupsHit, groups.length));
+  return chunks.filter((c) =>
+    hasCooccurrence(c.content, groups, effectiveMin)
+  );
 }
 
 export const __TESTING = {
@@ -126,7 +132,7 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
     const pathLike = filters.pathLike ?? autoPathLike;
 
     // Anclas desde la query
-    const groups = buildAnchorGroupsFromQuery(
+    const { groups, minHits } = buildAnchorGroupsFromQuery(
       parsed.query,
       parsed.jurisdictionHint
     );
@@ -139,8 +145,9 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
       rerankMode: "lexical",
       perDoc: parsed.perDoc ?? 4,
       minSim: parsed.minSim ?? 0.35,
+      phase: "lexical-strict",
     });
-    let filtered = filterByCooccurrence(result.chunks, groups, 2);
+    let filtered = filterByCooccurrence(result.chunks, groups, minHits);
 
     let phase = "lexical-strict";
     if (filtered.length === 0) {
@@ -152,8 +159,9 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
         rerankMode: "mmr",
         perDoc: parsed.perDoc ?? 4,
         minSim: parsed.minSim ?? 0.35,
+        phase: "mmr-expanded",
       });
-      filtered = filterByCooccurrence(result.chunks, groups, 2);
+      filtered = filterByCooccurrence(result.chunks, groups, minHits);
       phase = "mmr-expanded";
     }
 
@@ -171,14 +179,15 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
         rerankMode: "lexical",
         perDoc: parsed.perDoc ?? 4,
         minSim: parsed.minSim ?? 0.35,
+        phase: "negative-evidence",
       });
       filtered = filterByCooccurrence(
         result.chunks,
         relaxedGroups,
-        Math.min(2, relaxedGroups.length)
+        Math.min(minHits, relaxedGroups.length || 1)
       );
-      phase = "negative-evidence";
-      (result.metrics as any).relaxed = true;
+        phase = "negative-evidence";
+        result.metrics.relaxed = true;
     }
 
     // Auditoría
