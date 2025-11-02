@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useMemo, useRef, useState } from "react";
 import { startSSE, type SSEMessage, type SSEController } from "@/lib/sse";
 import type {
+  AuthState,
   ClaimCheckEntry,
   Citation,
   MetricsSnapshot,
@@ -14,6 +15,8 @@ interface ChatProps {
   onTimeline: (updater: (prev: TimelineEvent[]) => TimelineEvent[]) => void;
   onCitations: (citations: Citation[]) => void;
   onClaims: (claims: ClaimCheckEntry[]) => void;
+  authState: AuthState;
+  onAuthStateChange: (state: AuthState) => void;
 }
 
 interface ChatMessage {
@@ -36,7 +39,7 @@ interface ToolEventPayload {
   durationMs?: number;
 }
 
-interface MetricsEventPayload extends MetricsSnapshot {}
+type MetricsEventPayload = MetricsSnapshot;
 
 interface ContextEventPayload {
   citations: Citation[];
@@ -55,10 +58,11 @@ export default function Chat({
   onTimeline,
   onCitations,
   onClaims,
+  authState,
+  onAuthStateChange,
 }: ChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [passcode, setPasscode] = useState("");
   const [isStreaming, setStreaming] = useState(false);
   const controllerRef = useRef<SSEController | null>(null);
   const activeMessageId = useRef<string | null>(null);
@@ -138,10 +142,28 @@ export default function Chat({
         }
         case "tool": {
           const payload = event.data as ToolEventPayload;
+          const rawDetail = payload.detail as unknown;
           const detailString =
-            payload.detail && typeof payload.detail !== "string"
-              ? JSON.stringify(payload.detail, null, 2)
-              : (payload.detail as string | undefined);
+            rawDetail && typeof rawDetail !== "string"
+              ? JSON.stringify(rawDetail, null, 2)
+              : (rawDetail as string | undefined);
+          if (payload.name === "verify_passcode") {
+            if (payload.status === "success" && rawDetail) {
+              const detail = rawDetail as { valid?: boolean; userId?: string; email?: string };
+              if (detail.valid && detail.userId) {
+                onAuthStateChange({
+                  status: "valid",
+                  userId: detail.userId,
+                  email: detail.email,
+                });
+              } else {
+                onAuthStateChange({ status: "invalid" });
+              }
+            }
+            if (payload.status === "error") {
+              onAuthStateChange({ status: "invalid" });
+            }
+          }
           const statusMap: Record<
             ToolEventPayload["status"],
             TimelineEvent["status"]
@@ -193,6 +215,7 @@ export default function Chat({
       onClaims,
       onCitations,
       onMetrics,
+      onAuthStateChange,
       pushTimeline,
       updateMessage,
     ]
@@ -219,7 +242,8 @@ export default function Chat({
       onClaims([]);
 
       const payload = {
-        passcode: passcode || undefined,
+        authUserId:
+          authState.status === "valid" ? authState.userId : undefined,
         messages: [...messages, userMessage].map((msg) => ({
           role: msg.role,
           content: msg.content,
@@ -262,7 +286,7 @@ export default function Chat({
       messages,
       onCitations,
       onClaims,
-      passcode,
+      authState,
       resetTimeline,
     ]
   );
@@ -283,8 +307,8 @@ export default function Chat({
       <header className="chat-header">
         <h1>Copiloto Tributario</h1>
         <p>
-          Respuestas con evidencia y acciones comerciales tipadas. Ingresa el
-          passcode para habilitar herramientas.
+          Respuestas con evidencia y acciones comerciales tipadas. Compartí tu
+          passcode directamente en la conversación para habilitar herramientas.
         </p>
       </header>
 
@@ -311,17 +335,6 @@ export default function Chat({
 
       <footer className="chat-footer">
         <form onSubmit={handleSubmit} className="chat-form">
-          <div className="form-row">
-            <label htmlFor="passcode">Passcode</label>
-            <input
-              id="passcode"
-              type="password"
-              value={passcode}
-              onChange={(event) => setPasscode(event.target.value)}
-              placeholder="Opcional"
-              autoComplete="off"
-            />
-          </div>
           <div className="form-row">
             <label htmlFor="prompt">Pregunta</label>
             <textarea

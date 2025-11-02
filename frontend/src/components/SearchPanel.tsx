@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import type { MetricsSnapshot } from "./types";
+import type { AuthState, MetricsSnapshot } from "./types";
 
 interface SearchResult {
   id: string;
@@ -23,9 +23,12 @@ interface ApiResponse {
 
 const API_BASE = (process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001").replace(/\/$/, "");
 
-export default function SearchPanel() {
+interface SearchPanelProps {
+  authState: AuthState;
+}
+
+export default function SearchPanel({ authState }: SearchPanelProps) {
   const [query, setQuery] = useState("");
-  const [passcode, setPasscode] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [metrics, setMetrics] = useState<MetricsSnapshot>({});
   const [loading, setLoading] = useState(false);
@@ -42,7 +45,8 @@ export default function SearchPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query: query.trim(),
-          passcode: passcode || undefined,
+          authUserId:
+            authState.status === "valid" ? authState.userId : undefined,
           k: 6,
           reranker: "lexical",
         }),
@@ -64,6 +68,11 @@ export default function SearchPanel() {
     <section className="panel search-panel">
       <header className="panel-header">
         <h2>Buscador híbrido</h2>
+        <p className="panel-subtitle">
+          {authState.status === "valid"
+            ? "Herramientas habilitadas para tu sesión."
+            : "Validá tu passcode en el chat para habilitar resultados restringidos."}
+        </p>
       </header>
       <div className="panel-body">
         <form className="search-form" onSubmit={handleSubmit}>
@@ -72,13 +81,6 @@ export default function SearchPanel() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Buscar normativa..."
-            disabled={loading}
-          />
-          <input
-            type="password"
-            value={passcode}
-            onChange={(event) => setPasscode(event.target.value)}
-            placeholder="Passcode (opcional)"
             disabled={loading}
           />
           <button type="submit" disabled={loading || !query.trim()}>

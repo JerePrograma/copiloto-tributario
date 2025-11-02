@@ -67,6 +67,7 @@ function rewriteQueryExpanded(groups: AnchorGroups): string {
 }
 
 const requestSchema = z.object({
+  authUserId: z.string().cuid().optional(),
   passcode: z.string().min(4).optional(),
   query: z.string().min(2),
   k: z.number().int().min(1).max(20).optional(),
@@ -86,11 +87,19 @@ const requestSchema = z.object({
   jurisdictionHint: z.enum(["AR-BA", "AR-CABA", "AR-CBA", "AR-NAC"]).optional(),
 });
 
-async function verifyPasscode(passcode?: string) {
-  if (!passcode)
-    return { authenticated: false, userId: undefined as string | undefined };
-  const invited = await prisma.invitedUser.findFirst({ where: { passcode } });
-  return { authenticated: Boolean(invited), userId: invited?.id };
+async function resolveAuth(
+  authUserId?: string,
+  passcode?: string
+): Promise<{ authenticated: boolean; userId: string | undefined }> {
+  if (authUserId) {
+    const invited = await prisma.invitedUser.findUnique({ where: { id: authUserId } });
+    if (invited) return { authenticated: true, userId: invited.id };
+  }
+  if (passcode) {
+    const invited = await prisma.invitedUser.findFirst({ where: { passcode } });
+    if (invited) return { authenticated: true, userId: invited.id };
+  }
+  return { authenticated: false, userId: undefined };
 }
 
 export async function search(req: IncomingMessage, res: ServerResponse) {
@@ -107,7 +116,10 @@ export async function search(req: IncomingMessage, res: ServerResponse) {
     const rawBody = Buffer.concat(chunks).toString("utf8");
     const parsed = requestSchema.parse(rawBody ? JSON.parse(rawBody) : {});
 
-    const { authenticated, userId } = await verifyPasscode(parsed.passcode);
+    const { authenticated, userId } = await resolveAuth(
+      parsed.authUserId,
+      parsed.passcode
+    );
 
     // Filtros
     const filters = parsed.filters ?? {};

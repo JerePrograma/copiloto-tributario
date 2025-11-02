@@ -43,3 +43,8 @@ export interface ClaimCheckEntry {
   status: "supported" | "no_evidence";
   citations: string[];
 }
+
+export type AuthState =
+  | { status: "unknown" }
+  | { status: "valid"; userId: string; email?: string }
+  | { status: "invalid"; reason?: string };
