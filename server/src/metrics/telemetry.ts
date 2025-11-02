@@ -24,6 +24,7 @@ export interface MetricsSnapshot {
   weightSource?: "auto" | "manual" | "phase";
   phase?: string;
   relaxed?: boolean;
+  vectorFallback?: boolean;
   modelId?: string;
   llmAttempts?: number;
 }
@@ -48,6 +49,7 @@ interface TelemetryState {
     weightSource: "auto" | "manual" | "phase";
     phase?: string;
     relaxed?: boolean;
+    vectorFallback?: boolean;
   };
   llm?: {
     modelId?: string;
@@ -75,6 +77,7 @@ export interface Telemetry {
     weightSource: "auto" | "manual" | "phase";
     phase?: string;
     relaxed?: boolean;
+    vectorFallback?: boolean;
   }) => void;
   setLLMInfo: (info: { modelId?: string; attempts?: number }) => void;
   addToolEvent: (event: ToolTimelineEvent) => void;
@@ -132,6 +135,7 @@ export function createTelemetry(): Telemetry {
         snapshot.weightSource = state.searchMetrics.weightSource;
         snapshot.phase = state.searchMetrics.phase;
         snapshot.relaxed = state.searchMetrics.relaxed;
+        snapshot.vectorFallback = state.searchMetrics.vectorFallback;
       }
       if (state.llm) {
         snapshot.modelId = state.llm.modelId;

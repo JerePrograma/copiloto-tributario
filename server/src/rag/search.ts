@@ -1,6 +1,11 @@
 import { performance } from "node:perf_hooks";
 import { prisma } from "../lib/prisma";
-import { embed } from "../lib/ollama";
+import {
+  embed,
+  EmbeddingServiceUnavailableError,
+  type EmbeddingResult,
+} from "../lib/ollama";
+import { env } from "../lib/env";
 import { sanitizeContext } from "../security/sanitize";
 import { rerankChunks, type RerankerMode } from "./rerank";
 import {
@@ -39,6 +44,7 @@ export interface SearchMetrics {
   weightSource: "auto" | "manual" | "phase";
   phase?: string;
   relaxed?: boolean;
+  vectorFallback?: boolean;
 }
 
 export interface SearchResult {
@@ -153,7 +159,25 @@ export async function searchDocuments(
   const sanitizedJurisdictions = sanitizeJurisdictions(opts.jurisdiccion, auth);
 
   // 1) Embedding de la query
-  const emb = await embed(query);
+  let emb: EmbeddingResult;
+  let vectorFallback = false;
+  try {
+    emb = await embed(query);
+  } catch (error) {
+    if (error instanceof EmbeddingServiceUnavailableError) {
+      console.warn("Fallo el servicio de embeddings, se desactiva la búsqueda vectorial.", error);
+      vectorFallback = true;
+      vectorWeight = 0;
+      textWeight = 1;
+      weightSource = "manual";
+      emb = {
+        vector: Array.from({ length: env.EMBEDDING_DIM }, () => 0),
+        tMs: 0,
+      };
+    } else {
+      throw error;
+    }
+  }
   const vectorLiteral =
     "[" + emb.vector.map((v) => Number(v).toFixed(6)).join(",") + "]";
 
@@ -286,6 +310,7 @@ export async function searchDocuments(
       textWeight,
       weightSource,
       phase: opts.phase,
+      vectorFallback,
     },
   };
 }
