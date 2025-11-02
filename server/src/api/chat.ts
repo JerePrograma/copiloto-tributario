@@ -312,8 +312,8 @@ async function retrieveWithAnchors(
   filtered = filterByCooccurrence(result.chunks, relaxedGroups, 1);
   if (filtered.length > 0) {
     result.chunks = filtered;
-    (result.metrics as any).phase = "relaxed";
-    (result.metrics as any).relaxed = true;
+    result.metrics.phase = "relaxed";
+    result.metrics.relaxed = true;
     return result;
   }
 
@@ -325,7 +325,7 @@ async function retrieveWithAnchors(
     minSim: 0.2,
     phase: "vector-fallback",
   });
-  (result.metrics as any).vectorFallback = true;
+  result.metrics.vectorFallback = true;
   return result;
 }
 
@@ -597,6 +597,7 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
       weightSource: searchResult.metrics.weightSource,
       phase: searchResult.metrics.phase,
       relaxed: searchResult.metrics.relaxed,
+      vectorFallback: searchResult.metrics.vectorFallback,
     });
 
     const citations = formatCitations(searchResult);
