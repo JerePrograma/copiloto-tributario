@@ -109,9 +109,9 @@ export function startSSE<T = unknown>(
 
 class AbortSignalAny implements AbortSignal {
   readonly aborted: boolean = false;
-  readonly reason: any;
+  readonly reason: unknown;
   readonly [Symbol.toStringTag] = "AbortSignal";
-  onabort: ((this: AbortSignal, ev: Event) => any) | null = null;
+  onabort: ((this: AbortSignal, ev: Event) => void) | null = null;
   private signals: AbortSignal[];
   private abortController = new AbortController();
 
@@ -142,11 +142,11 @@ class AbortSignalAny implements AbortSignal {
     this.abortController.signal.throwIfAborted();
   }
 
-  private handleAbort(reason: any) {
+  private handleAbort(reason: unknown) {
     if (this.abortController.signal.aborted) return;
     this.abortController.abort(reason);
     (this as { aborted: boolean }).aborted = true;
-    (this as { reason: any }).reason = reason;
+    (this as { reason: unknown }).reason = reason;
     this.onabort?.(new Event("abort"));
   }
 }

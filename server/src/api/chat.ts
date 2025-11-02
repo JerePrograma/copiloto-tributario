@@ -15,6 +15,7 @@ import { LEX, norm } from "../nlp/lexicon";
 
 // ---------- schema
 const requestSchema = z.object({
+  authUserId: z.string().cuid().optional(),
   passcode: z.string().min(4).optional(),
   messages: z
     .array(
@@ -479,7 +480,17 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
     // auth
     let authenticated = false;
     let authenticatedUserId: string | undefined;
-    if (parsed.passcode) {
+    if (parsed.authUserId) {
+      const invited = await prisma.invitedUser.findUnique({
+        where: { id: parsed.authUserId },
+      });
+      if (invited) {
+        authenticated = true;
+        authenticatedUserId = invited.id;
+      }
+    }
+
+    if (!authenticated && parsed.passcode) {
       const invited = await prisma.invitedUser.findFirst({
         where: { passcode: parsed.passcode },
       });

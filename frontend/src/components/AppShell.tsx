@@ -8,6 +8,7 @@ import SourcesPanel from "./SourcesPanel";
 import QualityDashboard from "./QualityDashboard";
 import SearchPanel from "./SearchPanel";
 import type {
+  AuthState,
   ClaimCheckEntry,
   Citation,
   MetricsSnapshot,
@@ -19,6 +20,7 @@ export default function AppShell() {
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [citations, setCitations] = useState<Citation[]>([]);
   const [claims, setClaims] = useState<ClaimCheckEntry[]>([]);
+  const [authState, setAuthState] = useState<AuthState>({ status: "unknown" });
 
   return (
     <div className="layout">
@@ -28,10 +30,12 @@ export default function AppShell() {
           onTimeline={setTimeline}
           onCitations={setCitations}
           onClaims={setClaims}
+          authState={authState}
+          onAuthStateChange={setAuthState}
         />
       </div>
       <aside className="layout-aside">
-        <SearchPanel />
+        <SearchPanel authState={authState} />
         <SourcesPanel citations={citations} />
         <QualityDashboard claims={claims} />
         <MetricsPanel metrics={metrics} />
