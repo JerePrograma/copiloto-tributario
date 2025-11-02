@@ -4,7 +4,7 @@ import {
   type StreamTextResult,
   type CoreMessage,
   type ToolSet,
-  type ModelMessage,
+  APICallError, // ✅ existe en ai@5
 } from "ai";
 import { modelFor, resolveModelSequence } from "../lib/openrouter";
 
@@ -12,10 +12,9 @@ interface StreamParams {
   system?: string;
   messages: CoreMessage[];
   tools?: Record<string, unknown>;
-  // lo dejamos por si arriba alguien lo usa, pero NO se lo pasamos a streamText
-  maxSteps?: number;
   temperature?: number;
   topP?: number;
+  abortSignal?: AbortSignal;
 }
 
 export interface StreamWithFallbackResult {
@@ -24,78 +23,108 @@ export interface StreamWithFallbackResult {
   attempts: number;
 }
 
-function normalizeContent(content: CoreMessage["content"]): string {
-  if (typeof content === "string") {
-    return content;
-  }
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  if (Array.isArray(content)) {
-    return content
-      .map((part: any) => {
-        if (typeof part === "string") return part;
-        if (part && typeof part === "object" && typeof part.text === "string") {
-          return part.text;
-        }
-        return "";
-      })
-      .filter(Boolean)
-      .join("\n");
-  }
+/** Normaliza el error a {status, message} y detecta si parece venir del provider */
+function asApiError(err: unknown): {
+  status: number;
+  message: string;
+  fromApi: boolean;
+} {
+  const anyErr = err as any;
+  const fromApi =
+    err instanceof APICallError ||
+    (anyErr &&
+      typeof anyErr === "object" &&
+      ("statusCode" in anyErr || "url" in anyErr));
 
-  return String(content ?? "");
+  const status =
+    err instanceof APICallError
+      ? err.statusCode ?? 0
+      : typeof anyErr?.statusCode === "number"
+      ? anyErr.statusCode
+      : 0;
+
+  const message =
+    err instanceof APICallError
+      ? String(err.message ?? "")
+      : typeof anyErr?.message === "string"
+      ? anyErr.message
+      : String(err);
+
+  return { status, message, fromApi };
 }
 
-// CoreMessage -> ModelMessage
-function toModelMessages(messages: CoreMessage[]): ModelMessage[] {
-  return messages
-    .filter((m) => m.role !== "system")
-    .map<ModelMessage>((m) => {
-      const base: ModelMessage = {
-        role: m.role as ModelMessage["role"],
-        content: normalizeContent(m.content),
-      };
+function shouldSkipModel(err: unknown): {
+  skip: boolean;
+  reason?: string;
+  waitMs?: number;
+} {
+  const { status, message, fromApi } = asApiError(err);
+  if (!fromApi) return { skip: false }; // error “duro” local: no seguir probando
 
-      if ((m as any).providerOptions) {
-        return {
-          ...base,
-          providerOptions: (m as any).providerOptions,
-        } as ModelMessage;
-      }
+  if (status === 401)
+    return { skip: true, reason: "401 unauthorized (key / account)" };
+  if (status === 402 || /Insufficient credits/i.test(message))
+    return { skip: true, reason: "402 insufficient credits" };
+  if (status === 403) return { skip: true, reason: "403 forbidden" };
+  if (status === 404) return { skip: true, reason: "404 model not found" };
+  if (status === 429)
+    return { skip: true, reason: "429 rate limit", waitMs: 300 };
+  if (status >= 500 && status < 600)
+    return { skip: true, reason: `${status} server error`, waitMs: 200 };
 
-      return base;
-    });
+  return { skip: false };
 }
 
+// No conviertas a ModelMessage: ai@5 acepta CoreMessage[].
 export async function streamWithFallback(
   params: StreamParams,
   modelIds: string[] = resolveModelSequence()
 ): Promise<StreamWithFallbackResult> {
-  const modelMessages = toModelMessages(params.messages);
   const toolset = params.tools as ToolSet | undefined;
 
   let lastError: unknown;
-
   for (let attempt = 0; attempt < modelIds.length; attempt++) {
     const modelId = modelIds[attempt];
-
     try {
+      console.info(
+        `[LLM] intento ${attempt + 1}/${modelIds.length} → ${modelId}`
+      );
       const stream = await streamText({
         model: modelFor(modelId),
         system: params.system,
-        messages: modelMessages,
+        messages: params.messages,
         tools: toolset,
         temperature: params.temperature,
         topP: params.topP,
-        // NO maxSteps acá, esta versión no lo admite
+        abortSignal: params.abortSignal,
       });
-
-      // si querés respetar params.maxSteps, podés envolver stream.fullStream en /chat
+      console.info(`[LLM] OK con ${modelId} (intento ${attempt + 1})`);
       return { stream, modelId, attempts: attempt + 1 };
     } catch (error) {
       lastError = error;
-      if (attempt === modelIds.length - 1) {
-        throw error;
+      const policy = shouldSkipModel(error);
+
+      if (policy.skip) {
+        if (policy.waitMs) {
+          const extra = Math.min(1000, attempt * 200); // backoff incremental suave
+          await sleep(policy.waitMs + extra);
+        }
+        console.warn(
+          `[LLM] Skip ${modelId}: ${
+            policy.reason ?? "policy"
+          } → siguiente modelo...`
+        );
+        if (attempt === modelIds.length - 1) {
+          console.error(`[LLM] No quedan modelos para intentar`);
+          throw error;
+        }
+        continue;
       }
+
+      console.error(`[LLM] Error no-saltable con ${modelId}:`, error);
+      throw error;
     }
   }
 

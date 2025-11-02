@@ -6,7 +6,10 @@ const envSchema = z.object({
   OLLAMA_BASE_URL: z.string().url(),
   EMBEDDING_MODEL: z.string().min(2),
   EMBEDDING_DIM: z.coerce.number().int().positive(),
-  OPENROUTER_API_KEY: z.string().min(10),
+  OPENROUTER_API_KEY: z
+    .string()
+    .min(10)
+    .transform((s) => s.trim()),
   OPENROUTER_MODEL: z.string().min(3),
   OPENROUTER_FALLBACK_MODELS: z.string().optional(),
   DOCS_ROOT: z.string().min(1),
@@ -14,5 +17,6 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().optional(),
   FRONTEND_ORIGIN: z.string().url().optional(),
 });
+
 export type Env = z.infer<typeof envSchema>;
 export const env: Env = envSchema.parse(process.env);
