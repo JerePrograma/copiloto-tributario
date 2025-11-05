@@ -11,3 +11,7 @@ docker-compose.override.yml
 # data
 data/**
 !data/.keep
+!data/provincial/
+!data/provincial/**/*.md
+!data/normativas/
+!data/normativas/**/*.md
