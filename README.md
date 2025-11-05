@@ -89,8 +89,13 @@ copiloto-tributario/
    ```
 
 5. **Ingesta de normativa**
-   - Coloca archivos `.md|.txt|.html` en `data/`.
-   - Ejecuta:
+   - Puedes generar documentación de ejemplo (mock) a partir de `server/sources.json` sin descargar fuentes reales:
+     ```bash
+     pnpm --filter server run fetch:manifest -- --manifest server/sources.json --out ../data --mode mock
+     ```
+     Usa `--mode real` para volver al comportamiento original que descarga HTML/PDF.
+   - También puedes colocar archivos `.md|.txt|.html` propios en `data/`.
+   - Ejecuta la ingesta completa o por ruta específica:
      ```bash
      pnpm --filter server run ingest
      # o para una ruta específica
