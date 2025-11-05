@@ -15,7 +15,8 @@ enum FollowUpStatus {
 
 model InvitedUser {
   id        String    @id @default(cuid())
-  email     String    @unique
+  name      String    @unique
+  email     String?   @unique
   passcode  String
   createdAt DateTime  @default(now())
   sessions  Session[]
