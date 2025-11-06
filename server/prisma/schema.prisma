@@ -44,6 +44,18 @@ model InvitedUser {
   @@index([createdAt])
 }
 
+model AgentSession {
+  id                      String   @id @default(cuid())
+  history                 Json     @default("[]")
+  authenticatedUserId     String?
+  authenticatedUserEmail  String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@index([createdAt])
+  @@index([authenticatedUserId])
+}
+
 model Session {
   id        String      @id @default(cuid())
   userId    String
