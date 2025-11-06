@@ -3,25 +3,45 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
+/* ===== Enums ===== */
 enum FollowUpStatus {
   PENDING
   DONE
   CANCELED
 }
 
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  WON
+  LOST
+  ARCHIVED
+}
+
+/* ===== Core ===== */
 model InvitedUser {
-  id        String    @id @default(cuid())
-  name      String    @unique
-  email     String?   @unique
-  passcode  String
-  createdAt DateTime  @default(now())
-  sessions  Session[]
-  Lead      Lead[]
-  Note      Note[]
+  id         String    @id @default(cuid())
+  // Case-insensitive y único para login por "name"
+  name       String    @unique @db.Citext
+  // Case-insensitive y único si existe
+  email      String?   @unique @db.Citext
+  // Mantengo passcode plano por compatibilidad. Sugerido migrar a hash.
+  passcode   String    @db.VarChar(32)
+  // passcodeHash String? @db.VarChar(60) // <- activar en la migración de hash
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  sessions   Session[]
+  leads      Lead[]    @relation("InvitedUserToLead")
+  notes      Note[]
+
+  @@index([createdAt])
 }
 
 model Session {
@@ -32,33 +52,45 @@ model Session {
   updatedAt DateTime    @updatedAt
   expiresAt DateTime
   user      InvitedUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model Lead {
-  id        String   @id @default(cuid())
+  id        String      @id @default(cuid())
   userId    String?
   name      String
   company   String?
-  email     String?
+  email     String?     @db.Citext
   phone     String?
-  status    String   @default("new")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  status    LeadStatus  @default(NEW)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
 
-  user      InvitedUser? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user      InvitedUser? @relation(name: "InvitedUserToLead", fields: [userId], references: [id], onDelete: SetNull)
   notes     Note[]
   followups FollowUp[]
+
+  @@index([userId])
+  @@index([status, updatedAt])
+  @@index([createdAt])
+  @@unique([userId, name]) // evita duplicados de lead por usuario
 }
 
 model Note {
-  id        String   @id @default(cuid())
+  id        String       @id @default(cuid())
   leadId    String?
   userId    String?
-  content   String
-  createdAt DateTime @default(now())
+  content   String       @db.Text
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
 
   lead Lead?        @relation(fields: [leadId], references: [id], onDelete: SetNull)
   user InvitedUser? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([leadId, createdAt])
+  @@index([userId, createdAt])
 }
 
 model FollowUp {
@@ -73,13 +105,15 @@ model FollowUp {
   lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
 
   @@index([leadId, dueAt])
+  @@index([status, dueAt])
 }
 
+/* ===== Docs & RAG ===== */
 model Doc {
   id           String     @id @default(cuid())
-  path         String
-  title        String
-  // --- metadatos “core” para filtros rápidos
+  path         String     @db.Text
+  title        String     @db.Text
+  // metadatos core
   slug         String?    @db.VarChar(120)
   jurisdiccion String?    @db.VarChar(20)
   organismo    String?
@@ -87,7 +121,6 @@ model Doc {
   anio         Int?
   publicacion  String?
   fuenteUrl    String?
-  // --- resto del front-matter crudo
   metadata     Json?
 
   version     Int        @default(1)
@@ -97,38 +130,44 @@ model Doc {
 
   @@unique([path, version])
   @@index([jurisdiccion, tipo, anio])
+  @@index([slug])
+  @@index([createdAt])
 }
 
 model DocChunk {
   id         String                 @id @default(cuid())
   docId      String
   idx        Int
-  content    String
+  content    String                 @db.Text
   tokenCount Int
   startChar  Int
   endChar    Int
   href       String?
-  // Prisma no tipa vector; lo dejamos como Unsupported
+  // pgvector: típicamente vector(768). Prisma lo mantiene como Unsupported.
   embedding  Unsupported("vector")?
 
   doc Doc @relation(fields: [docId], references: [id], onDelete: Cascade)
 
+  @@unique([docId, idx])
   @@index([docId, idx])
 }
 
+/* ===== Auditoría ===== */
 model PromptAudit {
   id             String   @id @default(cuid())
   createdAt      DateTime @default(now())
   requestId      String
   userId         String?
   passcodeValid  Boolean  @default(false)
-  question       String
-  response       String
+  question       String   @db.Text
+  response       String   @db.Text
   citations      Json
   metrics        Json?
   jurisdiction   String?
 
   @@index([createdAt])
+  @@index([requestId])
+  @@index([userId])
 }
 
 model SearchAudit {
@@ -136,9 +175,10 @@ model SearchAudit {
   createdAt     DateTime @default(now())
   userId        String?
   passcodeValid Boolean  @default(false)
-  query         String
+  query         String   @db.Text
   filters       Json?
   metrics       Json?
 
   @@index([createdAt])
+  @@index([userId])
 }

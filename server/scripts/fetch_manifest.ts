@@ -1,11 +1,9 @@
-#!/usr/bin/env node
-// ESM, Node 22+
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { NodeHtmlMarkdown } from "node-html-markdown";
 import * as cheerio from "cheerio";
-import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
+import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs"; // ref: legacy path
 
 const require = createRequire(import.meta.url);
 
@@ -18,8 +16,9 @@ type Item = {
   anio: number;
   publicacion: string;
   fuente_url: string; // puede venir “limpia” o como [texto](url)
-  archivo_tipo: "html" | "pdf";
+  archivo_tipo: "html" | "pdf" | "manual";
   salida_relativa: string; // p.ej. "provincial/ar-ba-codigo-fiscal-10397.md"
+  manual_body?: string; // cuerpo markdown cuando archivo_tipo = "manual"
 };
 
 type Mode = "mock" | "real";
@@ -464,8 +463,8 @@ function generateMockContent(item: Item): string {
   if (profile.cumplimiento.length) {
     lines.push("");
     lines.push("## Calendario y cumplimiento");
-    for (const item of profile.cumplimiento) {
-      lines.push(`- ${item}`);
+    for (const it of profile.cumplimiento) {
+      lines.push(`- ${it}`);
     }
   }
 
@@ -501,7 +500,7 @@ function generateMockContent(item: Item): string {
 
 function frontMatter(
   i: Item,
-  contentType: "html" | "pdf" | "mock",
+  contentType: "html" | "pdf" | "mock" | "manual",
   finalUrl: string
 ) {
   const fetchedAt = new Date().toISOString();
@@ -552,7 +551,7 @@ async function pdfToMarkdown(buf: ArrayBuffer) {
     data,
     useWorkerFetch: false,
     isEvalSupported: false,
-    standardFontDataUrl, // evita los warnings de fuentes
+    standardFontDataUrl, // evita warnings de fuentes
   }).promise;
 
   let out: string[] = [];
@@ -607,14 +606,26 @@ async function download(url: string, timeoutMs = 30000, tries = 3) {
 
   for (const i of items) {
     const finalUrl =
-      mode === "mock" ? `mock://${sanitizeScalar(i.slug)}` : normalizeUrl(i.fuente_url);
+      i.archivo_tipo === "manual"
+        ? `manual://${sanitizeScalar(i.slug)}`
+        : mode === "mock"
+        ? `mock://${sanitizeScalar(i.slug)}`
+        : normalizeUrl(i.fuente_url);
+
     try {
       const outPath = path.resolve(DOCS_ROOT, i.salida_relativa);
       ensureDir(outPath);
       let md = "";
-      let contentType: "html" | "pdf" | "mock" = "mock";
+      let contentType: "html" | "pdf" | "mock" | "manual" = "mock";
 
-      if (mode === "mock") {
+      // PRIORIDAD: manual gana siempre
+      if (i.archivo_tipo === "manual") {
+        if (typeof i.manual_body !== "string" || i.manual_body.trim() === "") {
+          throw new Error(`manual_body faltante o vacío para slug ${i.slug}`);
+        }
+        md = cleanWhitespace(i.manual_body);
+        contentType = "manual";
+      } else if (mode === "mock") {
         md = generateMockContent(i);
         contentType = "mock";
       } else {
@@ -631,9 +642,18 @@ async function download(url: string, timeoutMs = 30000, tries = 3) {
       }
 
       const fm = frontMatter(i, contentType, finalUrl);
-      fs.writeFileSync(outPath, fm + md, "utf-8");
-      const tag = mode === "mock" ? "MOCK" : "OK";
-      console.log(`${tag} -> ${i.slug} -> ${path.relative(DOCS_ROOT, outPath)}`);
+      fs.writeFileSync(outPath, fm + md + "\n", "utf-8");
+      const tag =
+        contentType === "manual"
+          ? "MANUAL"
+          : contentType === "mock"
+          ? "MOCK"
+          : contentType === "html"
+          ? "HTML"
+          : "PDF";
+      console.log(
+        `${tag} -> ${i.slug} -> ${path.relative(DOCS_ROOT, outPath)}`
+      );
       ok++;
     } catch (e: any) {
       console.error(`ERR -> ${i.slug}: ${e.message}`);

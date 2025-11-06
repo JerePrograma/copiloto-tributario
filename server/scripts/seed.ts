@@ -25,7 +25,7 @@ async function ensureLeadWithNote(
   const lead =
     existing ??
     (await prisma.lead.create({
-      data: { userId, name: leadName, email, status: "new" },
+      data: { userId, name: leadName, email, status: "NEW" },
       select: { id: true, name: true },
     }));
 
