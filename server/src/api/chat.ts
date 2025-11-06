@@ -10,6 +10,11 @@ import { claimCheck } from "../claimcheck/claim_checker";
 import { createTelemetry } from "../metrics/telemetry";
 import { streamWithFallback } from "../llm/retry";
 import { recordPromptAudit } from "../metrics/audit";
+import {
+  getOrCreateAgentSession,
+  saveAgentSession,
+  type AgentMessage as SessionMessage,
+} from "../lib/session-store";
 import type { CoreMessage } from "ai";
 import { LEX, norm } from "../nlp/lexicon";
 
@@ -22,6 +27,7 @@ import { LEX, norm } from "../nlp/lexicon";
 
 // ---------- schema
 const requestSchema = z.object({
+  sessionId: z.string().min(1).max(128).optional(),
   authUserId: z.string().cuid().optional(),
   passcode: z.string().min(3).max(64).optional(),
   name: z.string().min(2).max(120).optional(), // NUEVO: identidad desde payload (usar email)
@@ -525,6 +531,42 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
 
     const parsed = requestSchema.parse(payload);
 
+    const sessionHeader = req.headers["x-session-id"];
+    const sessionIdFromHeader = Array.isArray(sessionHeader)
+      ? sessionHeader[0]
+      : sessionHeader;
+    const requestedSessionId =
+      typeof sessionIdFromHeader === "string" && sessionIdFromHeader.trim().length
+        ? sessionIdFromHeader.trim()
+        : parsed.sessionId?.trim();
+
+    const { session } = await getOrCreateAgentSession(requestedSessionId);
+    const sessionId = session.id;
+
+    session.history = parsed.messages.map(
+      (m) => ({ role: m.role, content: m.content }) as SessionMessage
+    );
+    await saveAgentSession(session);
+
+    const persistSessionAuth = async (
+      userId?: string,
+      email?: string | null
+    ) => {
+      session.authenticatedUser = userId
+        ? { id: userId, email: email ?? null }
+        : null;
+      await saveAgentSession(session);
+    };
+
+    const persistSessionAuthSafe = (
+      userId?: string,
+      email?: string | null
+    ) => {
+      persistSessionAuth(userId, email).catch((err) =>
+        console.error("session save error", err)
+      );
+    };
+
     // auth baseline
     let authenticated = false;
     let authenticatedUserId: string | undefined;
@@ -540,7 +582,15 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
         authenticated = true;
         authenticatedUserId = invited.id;
         authenticatedUserName = invited.email ?? undefined; // no redeclarar 'let'
+        await persistSessionAuth(invited.id, invited.email);
+      } else {
+        await persistSessionAuth(undefined);
       }
+    } else if (session.authenticatedUser) {
+      authenticated = true;
+      authenticatedUserId = session.authenticatedUser.id;
+      authenticatedUserName =
+        session.authenticatedUser.email ?? undefined;
     }
 
     // último mensaje de usuario
@@ -562,6 +612,7 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
+      "X-Session-Id": sessionId,
       "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN ?? "*",
       Vary: "Origin",
     });
@@ -577,6 +628,7 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
 
     const send: SSESender = (event, data) => sseSend(res, event, data);
     send("ready", { requestId });
+    send("session", { id: sessionId });
 
     // -------- Identidad + passcode desde payload o frase
     const identityFromPayload = parsed.name?.trim();
@@ -623,7 +675,20 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
       if (invited) {
         authenticated = true;
         authenticatedUserId = invited.id;
-        authenticatedUserName = invited.email ?? undefined;
+        const authEmail = invited.email ?? identity ?? undefined;
+        authenticatedUserName = authEmail ?? undefined;
+        await persistSessionAuth(invited.id, authEmail ?? null);
+        const authEventId = randomUUID();
+        send("tool", {
+          id: authEventId,
+          name: "verify_passcode",
+          status: "success",
+          detail: {
+            valid: true,
+            userId: invited.id,
+            email: authEmail ?? undefined,
+          },
+        });
 
         if (looksLikePureAuth(lastUserMessage.content)) {
           send("amendment", { reason: "fast_auth", method: "name+passcode" });
@@ -648,6 +713,14 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
           return;
         }
       } else if (looksLikePureAuth(lastUserMessage.content)) {
+        await persistSessionAuth(undefined);
+        const authEventId = randomUUID();
+        send("tool", {
+          id: authEventId,
+          name: "verify_passcode",
+          status: "error",
+          detail: { valid: false },
+        });
         send("amendment", { reason: "auth_failed_name_passcode" });
         const msg =
           "Credenciales no válidas. Formato: 'Soy <email>, código <passcode>'.";
@@ -733,9 +806,13 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
         if (!authenticated) throw new Error("Usuario no autenticado");
         return { userId: authenticatedUserId };
       },
-      setAuthenticated: (userId: string | undefined) => {
+      setAuthenticated: (userId: string | undefined, email?: string | null) => {
         authenticated = Boolean(userId);
         authenticatedUserId = userId;
+        authenticatedUserName = userId
+          ? email ?? authenticatedUserName
+          : undefined;
+        persistSessionAuthSafe(userId, email ?? null);
       },
     });
 

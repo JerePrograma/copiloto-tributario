@@ -1,6 +1,13 @@
 "use client";
 
-import { FormEvent, useCallback, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { startSSE, type SSEMessage, type SSEController } from "@/lib/sse";
 import type {
   AuthState,
@@ -53,6 +60,8 @@ const API_BASE = (
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001"
 ).replace(/\/$/, "");
 
+const SESSION_STORAGE_KEY = "copiloto.sessionId";
+
 export default function Chat({
   onMetrics,
   onTimeline,
@@ -61,6 +70,7 @@ export default function Chat({
   authState,
   onAuthStateChange,
 }: ChatProps) {
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setStreaming] = useState(false);
@@ -68,6 +78,21 @@ export default function Chat({
   const activeMessageId = useRef<string | null>(null);
 
   const chatEndpoint = useMemo(() => `${API_BASE}/api/chat`, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    if (stored && stored.trim().length > 0) {
+      setSessionId(stored.trim());
+      return;
+    }
+    const generated =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2);
+    window.localStorage.setItem(SESSION_STORAGE_KEY, generated);
+    setSessionId(generated);
+  }, []);
 
   const appendMessage = useCallback((message: ChatMessage) => {
     setMessages((prev) => [...prev, message]);
@@ -128,6 +153,17 @@ export default function Chat({
           // Panel lateral: citas. No tocar el bubble.
           const { citations } = event.data as ContextEventPayload;
           onCitations(citations);
+          break;
+        }
+        case "session": {
+          const { id } = event.data as { id?: string };
+          if (typeof id === "string" && id.trim().length > 0) {
+            const normalized = id.trim();
+            if (typeof window !== "undefined") {
+              window.localStorage.setItem(SESSION_STORAGE_KEY, normalized);
+            }
+            setSessionId(normalized);
+          }
           break;
         }
         case "claimcheck": {
@@ -216,6 +252,7 @@ export default function Chat({
       onCitations,
       onMetrics,
       onAuthStateChange,
+      setSessionId,
       pushTimeline,
       updateMessage,
     ]
@@ -241,7 +278,22 @@ export default function Chat({
       onCitations([]);
       onClaims([]);
 
+      let activeSessionId = sessionId;
+      if (!activeSessionId || activeSessionId.trim().length === 0) {
+        const generated =
+          typeof crypto !== "undefined" &&
+          typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : Math.random().toString(36).slice(2);
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(SESSION_STORAGE_KEY, generated);
+        }
+        setSessionId(generated);
+        activeSessionId = generated;
+      }
+
       const payload = {
+        sessionId: activeSessionId,
         authUserId:
           authState.status === "valid" ? authState.userId : undefined,
         messages: [...messages, userMessage].map((msg) => ({
@@ -256,6 +308,11 @@ export default function Chat({
         {
           method: "POST",
           body: JSON.stringify(payload),
+          headers: activeSessionId
+            ? {
+                "X-Session-Id": activeSessionId,
+              }
+            : undefined,
         },
         {
           onEvent: handleSSEEvent,
@@ -287,6 +344,7 @@ export default function Chat({
       onCitations,
       onClaims,
       authState,
+      sessionId,
       resetTimeline,
     ]
   );
