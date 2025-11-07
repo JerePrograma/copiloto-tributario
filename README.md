@@ -1,6 +1,15 @@
 # Copiloto Tributario
 
-Asistente tributario con recuperación aumentada, evidencia auditable y herramientas comerciales livianas. El objetivo es responder preguntas sobre normativa, explicar documentos fiscales y ejecutar acciones básicas (leads, notas, follow-ups) con métricas técnicas en vivo.
+Asistente tributario con RAG, evidencia auditable y herramientas comerciales livianas. Responde sobre normativa, explica documentos fiscales y ejecuta acciones básicas (leads, notas, follow-ups) con métricas en vivo.
+
+## Requisitos
+
+- Node.js ≥ 20.18
+- pnpm ≥ 9
+- Docker + Docker Compose
+- Dominio público y DNS (p. ej. Cloudflare)
+- Caddy (reverse proxy con TLS)
+- Acceso a un proveedor LLM vía OpenRouter
 
 ## Arquitectura
 
@@ -8,150 +17,397 @@ Asistente tributario con recuperación aumentada, evidencia auditable y herramie
 copiloto-tributario/
 ├─ docker-compose.yml
 ├─ .env.example
-├─ data/                       # Corpus de normativa (DOCS_ROOT)
-├─ frontend/                   # Next.js + UI de chat/metrics
-│  ├─ next.config.mjs
+├─ data/                         # Corpus de normativa (DOCS_ROOT)
+├─ frontend/                     # Next.js + UI (SSE)
 │  ├─ package.json
 │  └─ src/
-│     ├─ app/
-│     │  ├─ page.tsx          # Shell principal (chat + métricas)
-│     │  └─ api/health/route.ts
-│     ├─ components/
-│     │  ├─ AppShell.tsx
-│     │  ├─ Chat.tsx
-│     │  ├─ MetricsPanel.tsx
-│     │  └─ Timeline.tsx
-│     └─ lib/sse.ts            # Cliente SSE con abort y parsing
-├─ server/                     # Node.js + AI SDK + Prisma
+│     ├─ app/page.tsx            # Shell (chat + métricas)
+│     ├─ app/api/health/route.ts
+│     ├─ components/{Chat,MetricsPanel,Timeline}.tsx
+│     └─ lib/sse.ts
+├─ server/                       # Node + AI SDK + Prisma
 │  ├─ package.json
 │  ├─ prisma/
 │  │  ├─ schema.prisma
-│  │  └─ migrations/
-│  │     └─ 000_init/migration.sql  # Enable pgvector + tablas + índice ivfflat
-│  ├─ src/
-│  │  ├─ api/
-│  │  │  ├─ chat.ts           # Orquestación streamText + herramientas + SSE
-│  │  │  └─ dev-server.ts     # Servidor HTTP local (SSE + health)
-│  │  ├─ claimcheck/
-│  │  │  └─ claim_checker.ts  # Verificación oración-a-evidencia
-│  │  ├─ lib/
-│  │  │  ├─ env.ts            # Variables de entorno tipadas con zod
-│  │  │  ├─ ollama.ts         # Embeddings via Ollama
-│  │  │  ├─ openrouter.ts     # Cliente OpenRouter (AI SDK)
-│  │  │  └─ prisma.ts
-│  │  ├─ metrics/telemetry.ts # Métricas TTFB, LLM, SQL, embeddings, timeline
-│  │  ├─ rag/
-│  │  │  ├─ chunk.ts          # Chunking configurable (700/120)
-│  │  │  ├─ ingest.ts         # Ingesta + embeddings + persistencia
-│  │  │  └─ search.ts         # Búsqueda pgvector + sanitización
-│  │  ├─ security/sanitize.ts # Guard rails anti prompt-injection
-│  │  └─ tools/index.ts       # Registro de tools (zod + Prisma + auth)
-│  └─ scripts/
-│     ├─ ingest_path.ts       # Ingesta puntual por archivo/carpeta
-│     └─ seed.ts              # Usuario demo con passcode
+│  │  └─ migrations/000_init/migration.sql  # pgvector + tablas + ivfflat
+│  └─ src/
+│     ├─ api/{chat.ts,dev-server.ts}
+│     ├─ claimcheck/claim_checker.ts
+│     ├─ lib/{env.ts,ollama.ts,openrouter.ts,prisma.ts}
+│     ├─ metrics/telemetry.ts
+│     ├─ rag/{chunk.ts,ingest.ts,search.ts}
+│     ├─ security/sanitize.ts
+│     └─ tools/index.ts
 └─ README.md
 ```
 
-## Stack
+## Variables de entorno
 
-- **Frontend**: Next.js (App Router) con streaming SSE, UI de chat, panel de métricas y timeline de herramientas.
-- **Backend**: Node.js + [AI SDK](https://sdk.vercel.ai/) usando OpenRouter como provider de LLM.
-- **Embeddings**: [Ollama](https://ollama.com/) (`nomic-embed-text`).
-- **Base de datos**: PostgreSQL + `pgvector` (`ivfflat` listo para ANN).
-- **ORM**: Prisma.
-- **Claim checking**: coincidencia léxica oración-chunk con estatus `supported` / `no_evidence`.
+Crear **tres** archivos: uno global de ejemplo y dos específicos por app. Usa **placeholders**. No uses dominios reales en este archivo.
 
-## Puesta en marcha
+### `.env.example` (raíz, informativo)
 
-1. **Infra básica**
-   ```bash
-   docker compose up -d
-   ```
-   Levanta PostgreSQL (pgvector) y Ollama.
+```ini
+# === Infra ===
+DOMAIN=<DOMAIN>                # p. ej. your-domain.tld
+API_DOMAIN=<API_DOMAIN>        # p. ej. api.your-domain.tld
 
-2. **Variables de entorno**
-   ```bash
-   cp .env.example .env
-   ```
-   Ajusta `OPENROUTER_API_KEY` y, si es necesario, los puertos/URLs.
+# === Postgres local (docker compose) ===
+PG_HOST=127.0.0.1
+PG_PORT=5432
+PG_USER=app
+PG_PASSWORD=app
+PG_DB=copiloto
+PG_DB_SHADOW=copiloto_shadow
 
-3. **Dependencias**
-   ```bash
-   pnpm install
-   ```
-   (Requiere acceso al registry npm para descargar `tsx`, Prisma, etc.).
+# === Ollama ===
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+EMBED_MODEL=nomic-embed-text
+EMBED_DIM=768
 
-4. **Base de datos**
-   ```bash
-   pnpm --filter server prisma migrate dev
-   pnpm --filter server prisma:generate
-   pnpm --filter server run seed
-   ```
+# === OpenRouter ===
+OPENROUTER_API_KEY=changeme
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL=google/gemini-2.0-flash-exp:free
+
+# === RAG / Server ===
+DOCS_ROOT=../data
+RAG_TOP_K=6
+MAX_TOOL_ITERATIONS=3
+
+# === Fronteras CORS ===
+FRONTEND_ORIGIN=https://<DOMAIN>
+NEXT_PUBLIC_BACKEND_URL=https://<API_DOMAIN>
+```
+
+### `server/.env`
+
+```ini
+# Puerto del backend
+PORT=3001
+
+# Base de datos
+DATABASE_URL=postgresql://app:app@127.0.0.1:5432/copiloto
+SHADOW_DATABASE_URL=postgresql://app:app@127.0.0.1:5432/copiloto_shadow
+
+# RAG
+DOCS_ROOT=../data
+RAG_TOP_K=6
+MAX_TOOL_ITERATIONS=3
+
+# CORS (origen exacto, sin slash final)
+FRONTEND_ORIGIN=https://<DOMAIN>
+
+# Embeddings (Ollama)
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+EMBED_MODEL=nomic-embed-text
+EMBED_DIM=768
+
+# LLM vía OpenRouter
+OPENROUTER_API_KEY=changeme
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL=google/gemini-2.0-flash-exp:free
+
+NODE_ENV=production
+```
+
+### `frontend/.env.local`
+
+```ini
+# URL pública del backend para el navegador
+NEXT_PUBLIC_BACKEND_URL=https://<API_DOMAIN>
+
+NEXT_PUBLIC_APP_NAME=Copiloto Tributario
+NODE_ENV=production
+```
+
+## Puesta en marcha local (dev)
+
+1. **Infra (DB + Ollama)**
+
+```bash
+docker compose up -d
+docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+```
+
+2. **Crear DBs (si Prisma aún no corrió)**
+
+```bash
+docker exec -i ct_db psql -U app -d postgres -c "CREATE DATABASE copiloto;"
+docker exec -i ct_db psql -U app -d postgres -c "CREATE DATABASE copiloto_shadow;"
+```
+
+3. **Instalar dependencias**
+
+```bash
+pnpm install
+```
+
+4. **Migraciones + generate + seed**
+
+```bash
+pnpm --filter server prisma migrate dev
+pnpm --filter server prisma:generate
+pnpm --filter server run seed   # crea usuario demo y passcode
+```
 
 5. **Ingesta de normativa**
-   - Puedes generar documentación de ejemplo (mock) a partir de `server/sources.json` sin descargar fuentes reales:
-     ```bash
-     pnpm --filter server run fetch:manifest -- --manifest server/sources.json --out ../data --mode mock
-     ```
-     Usa `--mode real` para volver al comportamiento original que descarga HTML/PDF.
-   - También puedes colocar archivos `.md|.txt|.html` propios en `data/`.
-   - Ejecuta la ingesta completa o por ruta específica:
-     ```bash
-     pnpm --filter server run ingest
-     # o para una ruta específica
-     pnpm --filter server run ingest:path data/ordenanzas
-     ```
 
-6. **Servicios en desarrollo**
-   ```bash
-   pnpm --filter server dev        # backend SSE en http://localhost:3001
-   pnpm --filter frontend dev      # UI en http://localhost:3000
-   ```
+- Generar contenido **mock** desde `server/sources.json`:
 
-   Configura `NEXT_PUBLIC_BACKEND_URL` (frontend) y `FRONTEND_ORIGIN` (backend) para permitir CORS.
+```bash
+pnpm --filter server run fetch:manifest -- --manifest server/sources.json --out ../data --mode mock
+```
 
-## Flujo de conversación
+- Ingestar corpus:
 
-1. El frontend envía el historial + passcode (opcional) vía SSE.
-2. El backend recupera chunks pgvector (k=6) con métricas (`embeddingMs`, `sqlMs`, `k`, `similarityAvg`, `similarityMin`).
-3. `streamText` orquesta el plan del LLM y las herramientas (máx. `MAX_TOOL_ITERATIONS`).
-4. Eventos SSE emitidos:
-   - `ready`: ID de request.
-   - `context`: citas con `href`, snippet y similitud.
-   - `token`: delta de respuesta.
-   - `tool`: inicio/éxito/error + duración.
-   - `claimcheck`: resultado oración-evidencia.
-   - `metrics`: snapshot final (TTFB, latencias, k, similitudes).
-   - `done`/`error`.
-5. Claim checking final marca oraciones sin evidencia (`no_evidence`).
+```bash
+pnpm --filter server run ingest
+# o bien, ingesta puntual
+pnpm --filter server run ingest:path data/algo
+```
 
-## Seguridad y guardrails
+6. **Levantar apps en dev**
 
-- Sanitización del contexto RAG (`security/sanitize.ts`) eliminando instrucciones hostiles.
-- Herramientas bloqueadas hasta validar passcode (vía `verify_passcode`).
-- Validaciones Zod en tools y request inicial.
-- Aborto de streaming si el cliente cierra la conexión.
+```bash
+pnpm --filter server dev        # http://localhost:3001
+pnpm --filter frontend dev      # http://localhost:3000
+```
 
-## Scripts útiles
+## Despliegue en VPS (prod)
+
+### 1) Systemd units
+
+`/etc/systemd/system/copiloto-server.service`:
+
+```ini
+[Unit]
+Description=Copiloto Tributario - Backend
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+User=root
+Group=root
+WorkingDirectory=/opt/copiloto-tributario/server
+EnvironmentFile=/opt/copiloto-tributario/server/.env
+Environment=NODE_ENV=production
+# Si tenés "start" usa start; si no, dev con tsx (temporal)
+ExecStart=/usr/bin/env pnpm run dev
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/systemd/system/copiloto-frontend.service`:
+
+```ini
+[Unit]
+Description=Copiloto Tributario - Frontend
+After=network.target
+
+[Service]
+User=root
+Group=root
+WorkingDirectory=/opt/copiloto-tributario/frontend
+EnvironmentFile=/opt/copiloto-tributario/frontend/.env.local
+Environment=NODE_ENV=production
+# Importante: invocar Next sin el "--" defectuoso.
+ExecStart=/usr/bin/env pnpm exec next start -p 3000 -H 127.0.0.1
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Aplicar:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now copiloto-server copiloto-frontend
+```
+
+### 2) Caddyfile
+
+`/etc/caddy/Caddyfile`:
+
+```caddy
+<DOMAIN> {
+  encode zstd gzip
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "SAMEORIGIN"
+    Referrer-Policy "strict-origin-when-cross-origin"
+  }
+  reverse_proxy 127.0.0.1:3000
+}
+
+<API_DOMAIN> {
+  # Preflight dedicado
+  @preflight method OPTIONS
+  header @preflight {
+    Access-Control-Allow-Origin https://<DOMAIN>
+    Access-Control-Allow-Credentials true
+    Access-Control-Allow-Methods GET, POST, OPTIONS
+    Access-Control-Allow-Headers Content-Type, Authorization, X-Session-Id, x-session-id
+    Cache-Control "no-store"
+  }
+  respond @preflight 204
+
+  # Limpieza por si el backend ya envía CORS (evitar duplicados)
+  header {
+    -Access-Control-Allow-Origin
+    -Access-Control-Allow-Methods
+    -Access-Control-Allow-Headers
+  }
+  # CORS final único
+  header {
+    Access-Control-Allow-Origin https://<DOMAIN>
+    Access-Control-Allow-Credentials true
+    Access-Control-Allow-Methods GET, POST, OPTIONS
+    Access-Control-Allow-Headers Content-Type, Authorization, X-Session-Id, x-session-id
+  }
+
+  # SSE en /api/chat
+  @sse path /api/chat
+  header @sse {
+    Content-Type "text/event-stream"
+    Cache-Control "no-cache, no-transform"
+    X-Accel-Buffering "no"
+    -Content-Encoding
+  }
+
+  # No usar "encode" en este site para evitar problemas con SSE
+  reverse_proxy 127.0.0.1:3001
+}
+```
+
+Aplicar:
+
+```bash
+sudo caddy fmt --overwrite /etc/caddy/Caddyfile
+sudo caddy reload --config /etc/caddy/Caddyfile
+```
+
+### 3) DNS / Proxy (ejemplo con Cloudflare)
+
+- Registros A/AAAA o CNAME para `<DOMAIN>` y `<API_DOMAIN>` apuntando al VPS, **Proxied** activado.
+- Opcional: regla de caché *Bypass* para `<API_DOMAIN>/*`.
+- Evitar transformaciones que rompan SSE. Mantener `Cache-Control: no-transform` ya seteado por Caddy.
+
+## Comandos útiles
+
+### Backend
+
+```bash
+# Reiniciar backend
+sudo systemctl restart copiloto-server
+journalctl -u copiloto-server -n 120 --no-pager
+
+# Puerto
+ss -ltnp | grep ':3001' || echo "No está escuchando 3001"
+```
+
+### Frontend
+
+```bash
+# Build y start manual (si no usás systemd)
+pnpm --filter frontend build
+pnpm --filter frontend exec next start -p 3000 -H 127.0.0.1
+```
+
+### Salud y CORS
+
+```bash
+# Salud local backend
+curl -si http://127.0.0.1:3001/api/health | sed -n '1,20p'
+
+# Salud vía edge
+curl -si https://<API_DOMAIN>/api/health | sed -n '1,40p'
+
+# Preflight correcto (204)
+curl -si -X OPTIONS https://<API_DOMAIN>/api/chat \
+  -H "Origin: https://<DOMAIN>" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: Content-Type, X-Session-Id"
+
+# SSE mínimo (debería emitir 'ready' y 'session')
+curl -N -s https://<API_DOMAIN>/api/chat \
+  -H "Origin: https://<DOMAIN>" \
+  -H "Content-Type: application/json" \
+  --data '{"messages":[{"role":"user","content":"ping"}]}'
+```
+
+## Flujo de conversación (SSE)
+
+Eventos emitidos:
+
+- `ready`: id del request
+- `session`: id de sesión
+- `context`: citas RAG con `href`, snippet y similitud
+- `token`: delta LLM
+- `tool`: inicio/éxito/error + duración
+- `claimcheck`: oración vs evidencia (`supported` | `no_evidence`)
+- `metrics`: TTFB, latencias, k, similitudes
+- `done` | `error`
+
+## Seguridad
+
+- `FRONTEND_ORIGIN` exacto. Sin slash final.
+- Tools bloqueadas hasta validar passcode.
+- Sanitización anti prompt-injection en `security/sanitize.ts`.
+- Validaciones `zod` en request y tools.
+
+## Troubleshooting
+
+- **“Failed to fetch” en el browser**
+  - Duplicación CORS: limpiar en Caddy y setear CORS final único (ver Caddyfile).
+  - `FRONTEND_ORIGIN` y `NEXT_PUBLIC_BACKEND_URL` deben coincidir con los hosts reales.
+  - Proxy en DNS habilitado. HTTPS en ambos orígenes.
+  - Revisar Network tab: la primera request es `OPTIONS` 204; si es 4xx, CORS mal.
+
+- **502 en Caddy a `/`**
+  - No usar `next start -- -p 3000` (interpreta `-p` como carpeta).  
+    Usar `pnpm exec next start -p 3000 -H 127.0.0.1`.
+
+- **SSE se corta**
+  - No usar `encode` en el site del API.
+  - Confirmar `Cache-Control: no-transform` y `X-Accel-Buffering: no`.
+
+- **DB no migra**
+  - Ver `DATABASE_URL` y `SHADOW_DATABASE_URL`.
+  - Crear DBs manualmente si hace falta.
+
+- **Modelo OpenRouter**
+  - Cambiar `LLM_MODEL` en `server/.env`. Requiere clave válida.
+
+## Scripts (pnpm)
 
 | Comando | Descripción |
-| --- | --- |
-| `pnpm --filter server run seed` | Crea usuario demo (`demo@laburen.local` / `123456`). |
-| `pnpm --filter server run ingest` | Ingesta completa de `DOCS_ROOT` con embeddings Ollama. |
-| `pnpm --filter server run ingest:path <ruta>` | Ingesta puntual de carpeta/archivo. |
+|---|---|
+| `pnpm --filter server run seed` | Crea usuario demo y passcode |
+| `pnpm --filter server run ingest` | Ingesta completa de `DOCS_ROOT` |
+| `pnpm --filter server run ingest:path <ruta>` | Ingesta puntual de carpeta/archivo |
+| `pnpm --filter server run fetch:manifest -- --manifest server/sources.json --out ../data --mode mock` | Genera corpus de ejemplo |
+| `pnpm --filter server prisma migrate dev` | Migraciones en dev |
+| `pnpm --filter server prisma migrate deploy` | Migraciones en prod |
+| `pnpm --filter server prisma:generate` | Genera cliente Prisma |
 
-## Métricas en vivo
+## Endpoints
 
-El panel del frontend muestra:
+- `GET /api/health` → `{ "ok": true }`
+- `POST /api/chat` (SSE) → stream de eventos descritos arriba
 
-- **TTFB**: tiempo hasta el primer token.
-- **Latencia LLM**: duración total del stream.
-- **SQL / Embeddings**: tiempos de búsqueda vs. Ollama.
-- **k / similitudes**: cantidad de chunks + calidad promedio/mínima.
-- **Timeline**: ejecución de herramientas (OK / error / duración).
+## Roadmap breve
 
-## Futuras extensiones
-
-- Ajustar parámetros `ivfflat` (lists/probes) cuando crezca el corpus.
-- Versionado de corpus (`Doc.version`) para AB testing sin `TRUNCATE`.
-- Comparativas de modelos vía OpenRouter (`defaultModel()` configurable).
+- Tunear `ivfflat` (lists/probes) con corpus grande.
+- Versionado de corpus (`Doc.version`) para AB testing.
+- Selector de modelo (`LLM_MODEL`) por request.
