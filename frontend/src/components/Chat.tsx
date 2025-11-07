@@ -1,13 +1,6 @@
 "use client";
 
-import {
-  FormEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { FormEvent, useCallback, useMemo, useRef, useState } from "react";
 import { startSSE, type SSEMessage, type SSEController } from "@/lib/sse";
 import type {
   AuthState,
@@ -62,6 +55,37 @@ const API_BASE = (
 
 const SESSION_STORAGE_KEY = "copiloto.sessionId";
 
+// ===== Helpers a nivel módulo =====
+const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+const NAME_RE =
+  /\b(?:soy|me\s+llamo|nombre)\s+([a-záéíóúñ][a-záéíóúñ.' -]{1,60})\b/i;
+const PASS_RE =
+  /\b(código|codigo|passcode|clave)\s*[:=]?\s*([A-Za-z0-9-]{3,64})\b/i;
+const PASSMASK_RE = /\b(código|codigo|passcode|clave)\s*[:=]?\s*\*{3,}\b/i; // detecta ****** literal
+const REDACT_PASS_RE =
+  /\b(código|codigo|passcode|clave)\s*[:=]?\s*[A-Za-z0-9-]{3,64}\b/gi;
+
+export function parseAuthFields(text: string): {
+  name?: string;
+  passcode?: string;
+} {
+  const email = text.match(EMAIL_RE)?.[0]?.trim();
+  const pass = text.match(PASS_RE)?.[2]?.trim();
+  if (email && pass) return { name: email, passcode: pass };
+  // fallback a nombre si no hay email y ALLOW_NAME_AUTH=true en backend
+  const name = text.match(NAME_RE)?.[1]?.trim();
+  if (name && pass) return { name, passcode: pass };
+  return {};
+}
+
+export function redactSecrets(s: string): string {
+  return s.replace(REDACT_PASS_RE, "$1 ******");
+}
+
+export function containsMaskedPass(text: string): boolean {
+  return PASSMASK_RE.test(text);
+}
+
 export default function Chat({
   onMetrics,
   onTimeline,
@@ -78,21 +102,6 @@ export default function Chat({
   const activeMessageId = useRef<string | null>(null);
 
   const chatEndpoint = useMemo(() => `${API_BASE}/api/chat`, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const stored = window.localStorage.getItem(SESSION_STORAGE_KEY);
-    if (stored && stored.trim().length > 0) {
-      setSessionId(stored.trim());
-      return;
-    }
-    const generated =
-      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : Math.random().toString(36).slice(2);
-    window.localStorage.setItem(SESSION_STORAGE_KEY, generated);
-    setSessionId(generated);
-  }, []);
 
   const appendMessage = useCallback((message: ChatMessage) => {
     setMessages((prev) => [...prev, message]);
@@ -185,7 +194,11 @@ export default function Chat({
               : (rawDetail as string | undefined);
           if (payload.name === "verify_passcode") {
             if (payload.status === "success" && rawDetail) {
-              const detail = rawDetail as { valid?: boolean; userId?: string; email?: string };
+              const detail = rawDetail as {
+                valid?: boolean;
+                userId?: string;
+                email?: string;
+              };
               if (detail.valid && detail.userId) {
                 onAuthStateChange({
                   status: "valid",
@@ -218,8 +231,15 @@ export default function Chat({
           break;
         }
         case "amendment": {
-          // Opcional: marcar visualmente el bubble como “ajustado por evidencia”.
-          // No se inyecta contenido.
+          const { reason } = event.data as { reason?: string };
+          if (
+            reason === "auth_required" ||
+            reason === "auth_required_greeting"
+          ) {
+            onAuthStateChange({ status: "unknown" });
+            onCitations([]);
+            onClaims([]);
+          }
           break;
         }
         case "error": {
@@ -262,24 +282,42 @@ export default function Chat({
     onTimeline(() => []);
   }, [onTimeline]);
 
+  const resetSession = useCallback(() => {
+    controllerRef.current?.abort();
+    controllerRef.current = null;
+    activeMessageId.current = null;
+    setStreaming(false);
+    setMessages([]);
+    onCitations([]);
+    onClaims([]);
+    onAuthStateChange({ status: "unknown" });
+
+    // regenerar sessionId
+    const newId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(SESSION_STORAGE_KEY, newId);
+    }
+    setSessionId(newId);
+  }, [onAuthStateChange, onCitations, onClaims]);
+
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       if (!input.trim() || isStreaming) return;
 
-      const userMessage: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "user",
-        content: input.trim(),
-      };
-      appendMessage(userMessage);
-      setInput("");
-      resetTimeline();
-      onCitations([]);
-      onClaims([]);
+      // comando rápido de logout
+      if (/^\s*(logout|cerrar\s+sesión)\s*$/i.test(input)) {
+        resetSession();
+        setInput("");
+        return;
+      }
 
-      let activeSessionId = sessionId;
-      if (!activeSessionId || activeSessionId.trim().length === 0) {
+      // 1) sessionId normalizado ANTES de usarlo
+      let activeSessionId: string = (sessionId ?? "").trim();
+      if (!activeSessionId) {
         const generated =
           typeof crypto !== "undefined" &&
           typeof crypto.randomUUID === "function"
@@ -292,27 +330,61 @@ export default function Chat({
         activeSessionId = generated;
       }
 
+      // 2) redact/parse sobre el texto crudo
+      const raw = input.trim();
+
+      // bloquear intentos con ****** literal
+      if (containsMaskedPass(raw)) {
+        // mensaje de sistema rápido y cortar
+        appendMessage({
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content:
+            "No pegues ******. Escribí el passcode real junto a tu email o nombre.",
+        });
+        setInput("");
+        return;
+      }
+
+      const { name: authName, passcode: authPass } = parseAuthFields(raw);
+      const safe = redactSecrets(raw);
+
+      // 3) bubble del usuario sin secretos
+      const userMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: safe,
+      };
+
+      // 4) payload con sessionId ya listo y auth explícita si aplica
       const payload = {
         sessionId: activeSessionId,
-        authUserId:
-          authState.status === "valid" ? authState.userId : undefined,
-        messages: [...messages, userMessage].map((msg) => ({
-          role: msg.role,
-          content: msg.content,
+        authUserId: authState.status === "valid" ? authState.userId : undefined,
+        ...(authName && authPass ? { name: authName, passcode: authPass } : {}),
+        messages: [...messages, userMessage].map((m) => ({
+          role: m.role,
+          content: m.content,
         })),
       };
 
+      // 5) UI updates
+      appendMessage(userMessage);
+      setInput("");
+      resetTimeline();
+      onCitations([]);
+      onClaims([]);
+
+      // 6) SSE
       controllerRef.current?.abort();
       const controller = startSSE(
         chatEndpoint,
         {
           method: "POST",
           body: JSON.stringify(payload),
-          headers: activeSessionId
-            ? {
-                "X-Session-Id": activeSessionId,
-              }
-            : undefined,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Session-Id": activeSessionId,
+          },
         },
         {
           onEvent: handleSSEEvent,
@@ -335,17 +407,18 @@ export default function Chat({
       controllerRef.current = controller;
     },
     [
-      appendMessage,
-      chatEndpoint,
-      handleSSEEvent,
       input,
       isStreaming,
+      sessionId,
+      authState,
       messages,
+      chatEndpoint,
+      handleSSEEvent,
+      appendMessage,
+      resetTimeline,
       onCitations,
       onClaims,
-      authState,
-      sessionId,
-      resetTimeline,
+      resetSession,
     ]
   );
 
@@ -418,6 +491,9 @@ export default function Chat({
             </button>
           </div>
         </form>
+        <button type="button" onClick={resetSession} className="secondary">
+          Nueva conversación
+        </button>
       </footer>
     </section>
   );

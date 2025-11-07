@@ -8,7 +8,10 @@ import { chunkText } from "./chunk";
 import { embed } from "../lib/ollama";
 import { extractFrontMatter, normalizeLegalMetadata } from "./metadata";
 
-// --- CLI: --root > DOCS_ROOT > heurísticas locales
+/* ================================
+   Resolución de raíz de documentos
+   Prioridad: --root > DOCS_ROOT > heurísticas locales
+==================================*/
 function getArg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
   return i >= 0 ? process.argv[i + 1] : undefined;
@@ -25,15 +28,14 @@ const candidates = [
 
 const effectiveRoot = candidates.find((p) => fs.existsSync(p));
 if (!effectiveRoot) {
-  console.error(
-    "No se encontró carpeta de datos. Probé:",
-    candidates.join(" | ")
-  );
+  console.error("No se encontró carpeta de datos. Probé:", candidates.join(" | "));
   process.exit(2);
 }
 console.log("INGEST_ROOT =", effectiveRoot, " argv=", process.argv.slice(2));
 
-// --- Walk
+/* ================================
+   Utils
+==================================*/
 export function* walk(dir: string): Generator<string> {
   for (const entry of fs.readdirSync(dir)) {
     const full = join(dir, entry);
@@ -43,7 +45,14 @@ export function* walk(dir: string): Generator<string> {
   }
 }
 
-// --- Ingest one file
+function ensureUniqueSequentialIdx<T extends { idx: number }>(arr: T[]): T[] {
+  // Reindexa 0..N-1 y asegura unicidad determinística
+  return arr.map((c, i) => ({ ...c, idx: i }));
+}
+
+/* ================================
+   Ingesta de un archivo (idempotente y segura)
+==================================*/
 export async function ingestFile(filePath: string) {
   const relativePath = relative(effectiveRoot, filePath).replace(/\\/g, "/");
   const title = relativePath.split("/").pop() || relativePath;
@@ -52,6 +61,7 @@ export async function ingestFile(filePath: string) {
   const { body, metadata } = extractFrontMatter(raw);
   const normalized = normalizeLegalMetadata(metadata);
 
+  // Upsert del Doc
   const doc = await prisma.doc.upsert({
     where: { path_version: { path: relativePath, version: 1 } },
     update: {
@@ -60,6 +70,7 @@ export async function ingestFile(filePath: string) {
       tipo: normalized.tipo ?? null,
       anio: normalized.anio ?? null,
       metadata: normalized.raw ?? {},
+      updatedAt: new Date(),
     },
     create: {
       path: relativePath,
@@ -72,35 +83,67 @@ export async function ingestFile(filePath: string) {
     },
   });
 
-  await prisma.docChunk.deleteMany({ where: { docId: doc.id } });
+  // Chunking + reindexación determinística
+  const rawChunks = chunkText(body, 700, 120);
+  const chunks = ensureUniqueSequentialIdx(rawChunks);
 
-  const chunks = chunkText(body, 700, 120);
-  console.log(`Indexando ${relativePath}: ${chunks.length} chunks`);
+  // Guardias de diagnóstico
+  const seen = new Set<number>();
+  for (const c of chunks) {
+    if (seen.has(c.idx)) {
+      throw new Error(`chunker duplicó idx=${c.idx} en ${relativePath}`);
+    }
+    seen.add(c.idx);
+  }
 
-  for (const chunk of chunks) {
-    const created = await prisma.docChunk.create({
-      data: {
+  console.log(`Indexando ${relativePath}: ${chunks.length} chunks -> idx [0..${chunks.length - 1}]`);
+
+  // Sincronización exacta de filas:
+  // 1) borrar "sobrantes" (idx que ya no existen)
+  const keepIdx = chunks.map((c) => c.idx);
+  await prisma.docChunk.deleteMany({
+    where: { docId: doc.id, NOT: { idx: { in: keepIdx } } },
+  });
+
+  // 2) upsert de cada chunk (evita P2002 ante concurrencia o rerun)
+  for (const c of chunks) {
+    const row = await prisma.docChunk.upsert({
+      where: { docId_idx: { docId: doc.id, idx: c.idx } },
+      update: {
+        content: c.content,
+        tokenCount: c.content.length,
+        startChar: c.start,
+        endChar: c.end,
+        href: `${relativePath}#chunk=${c.idx}`,
+      },
+      create: {
         docId: doc.id,
-        idx: chunk.idx,
-        content: chunk.content,
-        tokenCount: chunk.content.length,
-        startChar: chunk.start,
-        endChar: chunk.end,
-        href: `${relativePath}#chunk=${chunk.idx}`,
+        idx: c.idx,
+        content: c.content,
+        tokenCount: c.content.length,
+        startChar: c.start,
+        endChar: c.end,
+        href: `${relativePath}#chunk=${c.idx}`,
       },
     });
 
-    const { vector, tMs } = await embed(chunk.content);
-    const vectorLiteral =
-      "[" + vector.map((v) => Number(v).toFixed(6)).join(",") + "]";
+    // Embedding y actualización (pgvector) — Prisma no soporta vector en create/update
+    const { vector, tMs } = await embed(c.content);
+    if (!Array.isArray(vector) || vector.length === 0) {
+      console.warn(`  chunk ${c.idx}: embedding vacío, se omite seteo`);
+      continue;
+    }
+    const lit = `[${vector.map((v) => Number(v).toFixed(6)).join(",")}]`;
     await prisma.$executeRawUnsafe(
-      `UPDATE "DocChunk" SET "embedding" = '${vectorLiteral}'::vector WHERE "id" = '${created.id}'`
+      `UPDATE "DocChunk" SET "embedding" = '${lit}'::vector WHERE "id" = '${row.id}'`
     );
-    console.log(`  chunk ${chunk.idx} -> embedding (${tMs} ms)`);
+    console.log(`  chunk ${c.idx} -> embedding (${tMs} ms)`);
   }
 }
 
-// --- Main
+/* ================================
+   Main: recorre todo el árbol
+==================================*/
 async function main() {
   const start = performance.now();
   let count = 0;
@@ -111,6 +154,7 @@ async function main() {
   const totalMs = Math.round(performance.now() - start);
   console.log(`Ingesta completada: ${count} archivos en ${totalMs} ms`);
 }
+
 main().catch((err) => {
   console.error(err);
   process.exit(1);

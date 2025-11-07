@@ -1,3 +1,4 @@
+// src/types/prompt.ts
 export interface MetricsSnapshot {
   ttfbMs?: number;
   llmMs?: number;

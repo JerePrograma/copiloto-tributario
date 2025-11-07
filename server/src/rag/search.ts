@@ -13,6 +13,7 @@ import {
   sanitizeJurisdictions,
 } from "../security/policies";
 
+/* ====================== Tipos ====================== */
 export interface RetrievedChunk {
   id: string;
   docId: string;
@@ -45,6 +46,9 @@ export interface SearchMetrics {
   phase?: string;
   relaxed?: boolean;
   vectorFallback?: boolean;
+  // extras informativos
+  tsQueryUsed?: "plainto" | "websearch" | "ilike-fallback";
+  tokens?: number;
 }
 
 export interface SearchResult {
@@ -55,9 +59,8 @@ export interface SearchResult {
 export interface SearchOpts {
   k?: number; // resultados finales
   perDoc?: number; // máximo por documento (diversidad)
-  minSim?: number; // umbral mínimo de similitud
+  minSim?: number; // umbral mínimo de similitud vectorial
   pathLike?: string; // filtro rápido por ruta (ILIKE)
-  // Si luego persistís metadatos del front-matter en "Doc":
   jurisdiccion?: string[];
   tipo?: string[];
   anioMin?: number;
@@ -70,6 +73,8 @@ export interface SearchOpts {
   phase?: string;
   phaseWeights?: Record<string, { vectorWeight?: number; textWeight?: number }>;
 }
+
+/* ====================== Utils ====================== */
 
 /** capea resultados por documento (diversidad) */
 function capByDoc<T extends { href: string }>(rows: T[], perDoc = 3) {
@@ -86,28 +91,42 @@ function capByDoc<T extends { href: string }>(rows: T[], perDoc = 3) {
   return out;
 }
 
-/** escapado mínimo para patrón ILIKE; no interpolar texto libre sin validar */
+/** escapado mínimo para patrón ILIKE/tsquery */
 function q(s: string) {
   return s.replace(/'/g, "''");
 }
+
+/** normaliza href Windows */
+function normHref(href: string | null) {
+  return (href ?? "#").replace(/\\/g, "/");
+}
+
+/* ====================== Core ====================== */
 
 export async function searchDocuments(
   query: string,
   k = 6,
   opts: SearchOpts = {}
 ): Promise<SearchResult> {
+  const tokens = query.trim().split(/\s+/).filter(Boolean).length;
+
   const K = Math.max(1, Math.min(opts.k ?? k, 50));
   const perDoc = Math.max(1, Math.min(opts.perDoc ?? 3, 10));
-  const minSim = Math.max(0, Math.min(opts.minSim ?? 0.15, 0.999));
-  const fetchN = K * 4; // traemos de más para poder diversificar
-  const tokens = query.trim().split(/\s+/).length;
+  const defaultMinSim = tokens <= 2 ? 0.05 : 0.15;
+  const minSim = Math.max(0, Math.min(opts.minSim ?? defaultMinSim, 0.999));
+  const fetchN = K * 4; // traemos de más para diversificar
+
+  // heurísticas simples
   const legalist = /(exenci[oó]n|patente|automotores?|pymes?)/i.test(query);
   const multiWord = tokens >= 3;
   const longQuery = tokens >= 8;
   const hasPhrase = /"[^"]+"/.test(query);
   const hasConnectors =
-    /[,;]|\b(de(l)?|para|sobre|seg[uú]n|respecto|contra|sin|con)\b/i.test(query);
+    /[,;]|\b(de(l)?|para|sobre|seg[uú]n|respecto|contra|sin|con)\b/i.test(
+      query
+    );
 
+  // pesos auto
   let autoTextWeight = 0.52;
   if (tokens <= 2) autoTextWeight = 0.6;
   if (legalist) autoTextWeight = Math.max(autoTextWeight, 0.6);
@@ -118,6 +137,7 @@ export async function searchDocuments(
     autoTextWeight = Math.min(autoTextWeight, 0.43);
   const autoVectorWeight = 1 - autoTextWeight;
 
+  // overrides por fase
   const phaseKey = opts.phase ?? "default";
   const phaseOverrides =
     opts.phaseWeights?.[phaseKey] ?? opts.phaseWeights?.default;
@@ -154,6 +174,7 @@ export async function searchDocuments(
     vectorWeight = vectorWeight / totalWeight;
     textWeight = textWeight / totalWeight;
   }
+
   const auth = Boolean(opts.authenticated);
   const restricted = restrictedJurisdictions(auth);
   const sanitizedJurisdictions = sanitizeJurisdictions(opts.jurisdiccion, auth);
@@ -165,7 +186,10 @@ export async function searchDocuments(
     emb = await embed(query);
   } catch (error) {
     if (error instanceof EmbeddingServiceUnavailableError) {
-      console.warn("Fallo el servicio de embeddings, se desactiva la búsqueda vectorial.", error);
+      console.warn(
+        "Fallo el servicio de embeddings, se desactiva la búsqueda vectorial.",
+        error
+      );
       vectorFallback = true;
       vectorWeight = 0;
       textWeight = 1;
@@ -181,12 +205,11 @@ export async function searchDocuments(
   const vectorLiteral =
     "[" + emb.vector.map((v) => Number(v).toFixed(6)).join(",") + "]";
 
-  // 2) WHERE dinámico (solo cláusulas seguras)
-  const where: string[] = [`c."embedding" IS NOT NULL`];
+  // 2) WHERE dinámico (sin filtrar por embedding, para permitir FTS puro)
+  const where: string[] = [];
   if (opts.pathLike?.trim()) {
     where.push(`d."path" ILIKE '%${q(opts.pathLike.trim())}%'`);
   }
-  // Si tenés columnas en "Doc" (agregalas con la migración de abajo)
   if (sanitizedJurisdictions?.length) {
     const inList = sanitizedJurisdictions.map((s) => `'${q(s)}'`).join(",");
     where.push(`d."jurisdiccion" IN (${inList})`);
@@ -203,14 +226,24 @@ export async function searchDocuments(
       `(d."jurisdiccion" IS NULL OR d."jurisdiccion" NOT IN (${notIn}))`
     );
   }
-
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-  // 3) Búsqueda híbrida: vector + FTS en la misma consulta
+  // 3) tsquery según longitud
+  const tsQueryUsed: "plainto" | "websearch" =
+    tokens <= 2 ? "plainto" : "websearch";
+  const tsQueryExpr =
+    tsQueryUsed === "plainto"
+      ? `plainto_tsquery('spanish', '${q(query)}')`
+      : `websearch_to_tsquery('spanish', '${q(query)}')`;
+
+  const textRankExpr = `ts_rank_cd(
+    setweight(to_tsvector('spanish', coalesce(d."title", '')), 'A') ||
+    setweight(to_tsvector('spanish', c."content"), 'B'),
+    ${tsQueryExpr}
+  )`;
+
+  // 4) SELECT híbrido tolerante a NULL + boosts
   const sqlStart = performance.now();
-  const textRankExpr = `ts_rank_cd(setweight(to_tsvector('spanish', coalesce(d."title", '')), 'A') || setweight(to_tsvector('spanish', c."content"), 'B'), plainto_tsquery('spanish', '${q(
-    query
-  )}'))`;
   const rows = await prisma.$queryRawUnsafe<
     Array<{
       id: string;
@@ -235,29 +268,112 @@ export async function searchDocuments(
       d."title",
       COALESCE(c."href", d."path") AS "href",
       c."content",
-      1 - (c."embedding" <=> '${vectorLiteral}'::vector) AS similarity,
+      /* vector sim tolerante a NULL */
+      CASE WHEN c."embedding" IS NULL
+           THEN 0
+           ELSE 1 - (c."embedding" <=> '${vectorLiteral}'::vector)
+      END AS "similarity",
       ${textRankExpr} AS "textScore",
-      ((${vectorWeight} * (1 - (c."embedding" <=> '${vectorLiteral}'::vector))) + (${textWeight} * ${textRankExpr})) AS "hybridScore",
+      (
+        (${vectorWeight} * CASE WHEN c."embedding" IS NULL
+                                THEN 0
+                                ELSE 1 - (c."embedding" <=> '${vectorLiteral}'::vector)
+                           END)
+        + (${textWeight} * ${textRankExpr})
+        /* señales simples: secciones operativas y leve recencia por año */
+        + CASE
+            WHEN c."content" ~* E'(^|\\n)##\\s*pasos' THEN 0.08
+            WHEN c."content" ~* E'(^|\\n)##\\s*errores(\\s+comunes)?' THEN 0.06
+            ELSE 0
+          END
+        + COALESCE(LEAST(GREATEST((d."anio" - 2019) * 0.003, -0.03), 0.06), 0)
+      ) AS "hybridScore",
       d."jurisdiccion",
       d."tipo",
       d."anio"
     FROM "DocChunk" c
     JOIN "Doc" d ON d."id" = c."docId"
     ${whereSql}
-    ORDER BY "hybridScore" DESC
+    ORDER BY "hybridScore" DESC NULLS LAST
     LIMIT ${fetchN}
     `
   );
-  const sqlMs = Math.round(performance.now() - sqlStart);
+  let sqlMs = Math.round(performance.now() - sqlStart);
   const ftsMs = sqlMs;
 
-  // 4) Saneado + normalización de href en Windows
-  const sanitized = rows.map((row) => ({
+  // 5) Si no hay filas, rescate ILIKE laxo sobre título/contenido
+  let effectiveRows = rows;
+  if (!effectiveRows.length) {
+    const words = query
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w.length >= 3)
+      .slice(0, 6)
+      .map((w) => q(w));
+
+    if (words.length) {
+      const orLike = words
+        .map((w) => `(d."title" ILIKE '%${w}%' OR c."content" ILIKE '%${w}%')`)
+        .join(" OR ");
+
+      const ilikeStart = performance.now();
+      effectiveRows = await prisma.$queryRawUnsafe<
+        Array<{
+          id: string;
+          docId: string;
+          idx: number;
+          title: string;
+          href: string | null;
+          content: string;
+          similarity: number;
+          textScore: number | null;
+          hybridScore: number | null;
+          jurisdiccion: string | null;
+          tipo: string | null;
+          anio: number | null;
+        }>
+      >(
+        `
+        SELECT
+          c."id",
+          c."docId",
+          c."idx",
+          d."title",
+          COALESCE(c."href", d."path") AS "href",
+          c."content",
+          CASE WHEN c."embedding" IS NULL
+               THEN 0
+               ELSE 1 - (c."embedding" <=> '${vectorLiteral}'::vector)
+          END AS "similarity",
+          NULL::float AS "textScore",
+          (
+            (${vectorWeight} * CASE WHEN c."embedding" IS NULL
+                                    THEN 0
+                                    ELSE 1 - (c."embedding" <=> '${vectorLiteral}'::vector)
+                               END)
+            + COALESCE(LEAST(GREATEST((d."anio" - 2019) * 0.003, -0.03), 0.06), 0)
+          ) AS "hybridScore",
+          d."jurisdiccion",
+          d."tipo",
+          d."anio"
+        FROM "DocChunk" c
+        JOIN "Doc" d ON d."id" = c."docId"
+        ${whereSql ? whereSql + " AND " : "WHERE "} (${orLike})
+        ORDER BY "hybridScore" DESC NULLS LAST
+        LIMIT ${fetchN}
+        `
+      );
+      sqlMs += Math.round(performance.now() - ilikeStart);
+    }
+  }
+
+  // 6) Saneado
+  const sanitized = effectiveRows.map((row) => ({
     id: row.id,
     docId: row.docId,
     idx: row.idx,
     title: row.title,
-    href: (row.href ?? "#").replace(/\\/g, "/"),
+    href: normHref(row.href),
     content: sanitizeContext(row.content),
     similarity: Number(row.similarity),
     textScore: row.textScore === null ? undefined : Number(row.textScore),
@@ -267,19 +383,26 @@ export async function searchDocuments(
     anio: row.anio,
   }));
 
-  // 5) Umbral y diversidad
-  const filtered = sanitized.filter((r) => r.similarity >= minSim);
+  // 7) Filtro combinado: respeta vector y FTS
+  const filtered = sanitized.filter((r) => {
+    const okVec = vectorWeight > 0 ? r.similarity >= minSim : true;
+    const okFts = textWeight > 0 ? (r.textScore ?? 0) > 0 : true;
+    return okVec && okFts;
+  });
+
+  // 8) Diversidad por documento
   const diversified = capByDoc(filtered, perDoc).slice(0, K);
 
-  let reranked = diversified;
+  // 9) Re-rank opcional
+  let reranked: RetrievedChunk[] = diversified;
   if (opts.rerankMode) {
     reranked = rerankChunks(query, diversified, {
       mode: opts.rerankMode,
       limit: opts.rerankLimit ?? K,
-    });
+    }) as RetrievedChunk[]; // si la firma de rerankChunks ya devuelve RetrievedChunk[], quita el "as"
   }
 
-  // 6) Métricas
+  // 10) Métricas
   const sims = reranked.map((x) => x.similarity);
   const similarityAvg = sims.length
     ? sims.reduce((a, b) => a + b, 0) / sims.length
@@ -311,6 +434,8 @@ export async function searchDocuments(
       weightSource,
       phase: opts.phase,
       vectorFallback,
+      tsQueryUsed: effectiveRows === rows ? tsQueryUsed : "ilike-fallback",
+      tokens,
     },
   };
 }

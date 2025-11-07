@@ -16,6 +16,12 @@ const envSchema = z.object({
   MAX_TOOL_ITERATIONS: z.coerce.number().int().min(1).max(8).default(4),
   PORT: z.coerce.number().int().positive().optional(),
   FRONTEND_ORIGIN: z.string().url().optional(),
+  ALLOW_NAME_AUTH: z
+    .union([z.boolean(), z.string()])
+    .optional()
+    .transform((v) =>
+      typeof v === "string" ? v.toLowerCase() === "true" : Boolean(v)
+    ),
 });
 
 export type Env = z.infer<typeof envSchema>;
