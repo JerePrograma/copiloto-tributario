@@ -12,7 +12,14 @@ const PORT = env.PORT ?? cliPort ?? 3001;
 const server = http.createServer((req, res) => {
   const { pathname } = parse(req.url ?? "", true);
   res.setHeader("Access-Control-Allow-Origin", env.FRONTEND_ORIGIN ?? "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  const allowHeaders = [
+    "Content-Type",
+    "Authorization",
+    "X-Session-Id",
+    "x-session-id",
+  ].join(", ");
+
+  res.setHeader("Access-Control-Allow-Headers", allowHeaders);
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
 
   if (req.method === "OPTIONS") {
