@@ -479,12 +479,17 @@ type AnyStreamEvent =
 
 // ---------- endpoint
 export async function chat(req: IncomingMessage, res: ServerResponse) {
-  // CORS preflight
   if (req.method === "OPTIONS") {
+    const origin = env.FRONTEND_ORIGIN ?? (req.headers.origin as string) ?? "*";
+    const reqHeaders =
+      (req.headers["access-control-request-headers"] as string) ?? "";
+
     res.writeHead(204, {
-      "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN ?? "*",
+      "Access-Control-Allow-Origin": origin,
       "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "content-type",
+      "Access-Control-Allow-Headers":
+        reqHeaders || "content-type, authorization, x-session-id",
+      "Access-Control-Max-Age": "600",
       Vary: "Origin",
     });
     res.end();
@@ -536,7 +541,8 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
       ? sessionHeader[0]
       : sessionHeader;
     const requestedSessionId =
-      typeof sessionIdFromHeader === "string" && sessionIdFromHeader.trim().length
+      typeof sessionIdFromHeader === "string" &&
+      sessionIdFromHeader.trim().length
         ? sessionIdFromHeader.trim()
         : parsed.sessionId?.trim();
 
@@ -544,7 +550,7 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
     const sessionId = session.id;
 
     session.history = parsed.messages.map(
-      (m) => ({ role: m.role, content: m.content }) as SessionMessage
+      (m) => ({ role: m.role, content: m.content } as SessionMessage)
     );
     await saveAgentSession(session);
 
@@ -558,10 +564,7 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
       await saveAgentSession(session);
     };
 
-    const persistSessionAuthSafe = (
-      userId?: string,
-      email?: string | null
-    ) => {
+    const persistSessionAuthSafe = (userId?: string, email?: string | null) => {
       persistSessionAuth(userId, email).catch((err) =>
         console.error("session save error", err)
       );
@@ -589,8 +592,7 @@ export async function chat(req: IncomingMessage, res: ServerResponse) {
     } else if (session.authenticatedUser) {
       authenticated = true;
       authenticatedUserId = session.authenticatedUser.id;
-      authenticatedUserName =
-        session.authenticatedUser.email ?? undefined;
+      authenticatedUserName = session.authenticatedUser.email ?? undefined;
     }
 
     // último mensaje de usuario
